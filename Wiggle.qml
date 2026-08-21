@@ -281,7 +281,7 @@ Item {
 
     onRunningChanged: {
       if (!running) {
-        if (root.currentMagnification === 1.0 && root.targetMagnification === 1.0) {
+        if (Math.abs(root.currentMagnification - 1.0) < 0.05 && root.targetMagnification <= 1.0) {
           root.finishDeactivation()
         }
       }
@@ -291,17 +291,8 @@ Item {
   // ── Compositor Cursor Visibility ────────────────────────────────────────
 
   function requestCursorInvisible(hidden, reason) {
-    var luaCode = hidden ? "hl.config({ cursor = { invisible = true } })" : "hl.config({ cursor = { invisible = false } })"
-    var argv = ["hyprctl", "eval", luaCode]
-    invisibleProc.command = argv
-    invisibleProc.running = true
-  }
-
-  Process {
-    id: invisibleProc
-    running: false
-    onExited: function(code) {
-      if (code !== 0) console.warn("wiggle: cursor visibility change failed with code " + code)
+    if (monitorProc.running) {
+      monitorProc.write(hidden ? "HIDE\n" : "SHOW\n")
     }
   }
 

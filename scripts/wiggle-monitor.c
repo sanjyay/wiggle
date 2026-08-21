@@ -271,10 +271,11 @@ static int is_mouse_device(const char *path) {
     int is_touchpad = libevdev_has_event_code(dev, EV_ABS, ABS_MT_POSITION_X);
     int is_direct = libevdev_has_property(dev, INPUT_PROP_DIRECT);
 
-    // Reject keyboards (devices with alphanumeric keys)
+    // Reject keyboards (devices with alphanumeric text keys)
     int has_keyboard_keys = libevdev_has_event_code(dev, EV_KEY, KEY_A) ||
                            libevdev_has_event_code(dev, EV_KEY, KEY_SPACE) ||
-                           libevdev_has_event_code(dev, EV_KEY, KEY_ENTER);
+                           libevdev_has_event_code(dev, EV_KEY, KEY_B) ||
+                           libevdev_has_event_code(dev, EV_KEY, KEY_Z);
 
     libevdev_free(dev);
     close(fd);
@@ -430,11 +431,19 @@ int main(int argc, char *argv[]) {
             break;
         }
         if (pfds[stdin_idx].revents & POLLIN) {
-            char dummy[64];
-            ssize_t n = read(STDIN_FILENO, dummy, sizeof(dummy));
+            char cmd_buf[64];
+            ssize_t n = read(STDIN_FILENO, cmd_buf, sizeof(cmd_buf) - 1);
             if (n == 0) {
                 // EOF: parent process exited
                 break;
+            }
+            if (n > 0) {
+                cmd_buf[n] = '\0';
+                if (strstr(cmd_buf, "HIDE")) {
+                    set_compositor_cursor_invisible(true);
+                } else if (strstr(cmd_buf, "SHOW")) {
+                    set_compositor_cursor_invisible(false);
+                }
             }
         }
 
