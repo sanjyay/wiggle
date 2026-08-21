@@ -1,0 +1,448 @@
+#!/usr/bin/env python3
+"""
+wiggle-discover-cursor — Theme-agnostic cursor capability discovery for Wiggle
+
+Discovers:
+  1. Active cursor theme name and source (env, gsettings, hyprland config)
+  2. Active base cursor size and source (env, gsettings, hyprland config)
+  3. Cursor backend and capability class:
+       - xcursor_discrete: legacy XCursor theme with fixed bitmap assets
+       - hyprcursor_discrete: Hyprcursor PNG theme with resize_algorithm=none
+       - hyprcursor_scalable: Hyprcursor theme with SVG or bilinear/nearest resampling
+       - unknown: uninspectable/unsupported theme (no unsafe native requests)
+  4. Generates ENLARGEMENT_SIZES based on real theme capabilities and user's original size.
+
+Output format on stdout:
+  STATUS=OK
+  THEME=<name>
+  THEME_SRC=<source>
+  SIZE=<pixels>
+  SIZE_SRC=<source>
+  BACKEND=<xcursor_discrete|hyprcursor_discrete|hyprcursor_scalable|unknown>
+  CAPABILITY=<discrete|scalable|none>
+  AVAILABLE_SIZES=<comma-separated sizes>
+  ENLARGEMENT_SIZES=<comma-separated sizes>
+
+MIT License
+"""
+
+import os
+import sys
+import struct
+import re
+import subprocess
+import tempfile
+import zlib
+import binascii
+
+SEARCH_PATHS = [
+    os.path.expanduser("~/.local/share/icons"),
+    os.path.expanduser("~/.icons"),
+    "/usr/share/icons",
+    "/usr/local/share/icons",
+]
+
+def get_active_theme():
+    # 1. Check HYPRCURSOR_THEME
+    val = os.environ.get("HYPRCURSOR_THEME", "").strip()
+    if val:
+        return val, "env:HYPRCURSOR_THEME"
+
+    # 2. Check XCURSOR_THEME
+    val = os.environ.get("XCURSOR_THEME", "").strip()
+    if val:
+        return val, "env:XCURSOR_THEME"
+
+    # 3. Check Hyprland getoption
+    try:
+        res = subprocess.run(
+            ["hyprctl", "getoption", "cursor:theme", "-j"],
+            capture_output=True, text=True, timeout=1
+        )
+        if res.returncode == 0:
+            import json
+            data = json.loads(res.stdout)
+            val = data.get("str", "").strip()
+            if val and val != "default":
+                return val, "hyprctl:cursor:theme"
+    except Exception:
+        pass
+
+    # 4. Check GSettings
+    try:
+        res = subprocess.run(
+            ["gsettings", "get", "org.gnome.desktop.interface", "cursor-theme"],
+            capture_output=True, text=True, timeout=1
+        )
+        if res.returncode == 0:
+            val = res.stdout.strip().strip("'\"")
+            if val and val != "default":
+                return val, "gsettings:cursor-theme"
+    except Exception:
+        pass
+
+    # 5. Check index.theme in standard icon directories
+    for def_path in [
+        os.path.expanduser("~/.icons/default/index.theme"),
+        os.path.expanduser("~/.local/share/icons/default/index.theme"),
+        "/usr/share/icons/default/index.theme"
+    ]:
+        if os.path.isfile(def_path):
+            try:
+                with open(def_path, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        if line.strip().startswith("Inherits="):
+                            val = line.strip().split("=", 1)[1].strip()
+                            if val:
+                                return val, f"index.theme:{def_path}"
+            except Exception:
+                pass
+
+    return "default", "fallback:default"
+
+def get_active_size():
+    # 1. Check HYPRCURSOR_SIZE
+    val = os.environ.get("HYPRCURSOR_SIZE", "").strip()
+    if val and val.isdigit() and int(val) > 0:
+        return int(val), "env:HYPRCURSOR_SIZE"
+
+    # 2. Check XCURSOR_SIZE
+    val = os.environ.get("XCURSOR_SIZE", "").strip()
+    if val and val.isdigit() and int(val) > 0:
+        return int(val), "env:XCURSOR_SIZE"
+
+    # 3. Check GSettings
+    try:
+        res = subprocess.run(
+            ["gsettings", "get", "org.gnome.desktop.interface", "cursor-size"],
+            capture_output=True, text=True, timeout=1
+        )
+        if res.returncode == 0:
+            val = res.stdout.strip()
+            if val.isdigit() and int(val) > 0:
+                return int(val), "gsettings:cursor-size"
+    except Exception:
+        pass
+
+    # 4. Check Hyprland getoption
+    try:
+        res = subprocess.run(
+            ["hyprctl", "getoption", "cursor:size", "-j"],
+            capture_output=True, text=True, timeout=1
+        )
+        if res.returncode == 0:
+            import json
+            data = json.loads(res.stdout)
+            val = data.get("int", 0)
+            if val > 0:
+                return val, "hyprctl:cursor:size"
+    except Exception:
+        pass
+
+    return 24, "fallback:default"
+
+def find_theme_dir(theme_name):
+    for base in SEARCH_PATHS:
+        cand = os.path.join(base, theme_name)
+        if os.path.isdir(cand):
+            return cand
+    return None
+
+def probe_xcursor(theme_dir):
+    cursor_candidates = ["default", "left_ptr", "arrow", "top_left_arrow"]
+    cursor_file = None
+    for cand in cursor_candidates:
+        p = os.path.join(theme_dir, "cursors", cand)
+        if os.path.isfile(p):
+            cursor_file = p
+            break
+
+    if not cursor_file:
+        cursors_dir = os.path.join(theme_dir, "cursors")
+        if os.path.isdir(cursors_dir):
+            for f in sorted(os.listdir(cursors_dir)):
+                p = os.path.join(cursors_dir, f)
+                if os.path.isfile(p) and not os.path.islink(p):
+                    cursor_file = p
+                    break
+
+    if not cursor_file:
+        return []
+
+    try:
+        with open(cursor_file, "rb") as f:
+            header = f.read(16)
+            if len(header) < 16:
+                return []
+            magic, _, _, ntoc = struct.unpack("<IIII", header)
+            if magic != 0x72756358:  # 'Xcur'
+                return []
+            sizes = set()
+            for _ in range(ntoc):
+                entry = f.read(12)
+                if len(entry) < 12:
+                    break
+                etype, subtype, _ = struct.unpack("<III", entry)
+                if etype == 0xfffd0002:  # XCURSOR_IMAGE_TYPE
+                    sizes.add(subtype)
+            return sorted(list(sizes))
+    except Exception:
+        return []
+
+def find_xcursor_file(theme_dir):
+    for name in ("default", "left_ptr", "arrow", "top_left_arrow"):
+        path = os.path.join(theme_dir, "cursors", name)
+        if os.path.isfile(path):
+            return os.path.realpath(path)
+    return None
+
+def png_chunk(kind, payload):
+    return (struct.pack(">I", len(payload)) + kind + payload +
+            struct.pack(">I", binascii.crc32(kind + payload) & 0xffffffff))
+
+def export_xcursor_image(theme_dir, wanted_size):
+    """Export the nearest left-pointer frame as straight-alpha RGBA PNG."""
+    cursor_file = find_xcursor_file(theme_dir)
+    if not cursor_file:
+        return "", 0, 0, 0, 0
+    try:
+        with open(cursor_file, "rb") as f:
+            magic, header_len, _, ntoc = struct.unpack("<IIII", f.read(16))
+            if magic != 0x72756358:
+                return "", 0, 0, 0, 0
+            f.seek(header_len)
+            entries = [struct.unpack("<III", f.read(12)) for _ in range(ntoc)]
+            images = [entry for entry in entries if entry[0] == 0xfffd0002]
+            if not images:
+                return "", 0, 0, 0, 0
+            _, nominal, offset = min(images, key=lambda entry: abs(entry[1] - wanted_size))
+            f.seek(offset)
+            chunk_header, kind, subtype, _ = struct.unpack("<IIII", f.read(16))
+            if kind != 0xfffd0002:
+                return "", 0, 0, 0, 0
+            width, height, hot_x, hot_y, _ = struct.unpack("<IIIII", f.read(20))
+            pixels = struct.unpack("<%dI" % (width * height), f.read(width * height * 4))
+
+        raw = bytearray()
+        for y in range(height):
+            raw.append(0)
+            for pixel in pixels[y * width:(y + 1) * width]:
+                a = (pixel >> 24) & 255
+                r = (pixel >> 16) & 255
+                g = (pixel >> 8) & 255
+                b = pixel & 255
+                if 0 < a < 255:
+                    r = min(255, (r * 255 + a // 2) // a)
+                    g = min(255, (g * 255 + a // 2) // a)
+                    b = min(255, (b * 255 + a // 2) // a)
+                raw.extend((r, g, b, a))
+
+        runtime = os.environ.get("XDG_RUNTIME_DIR")
+        if not runtime or not os.path.isdir(runtime):
+            return "", 0, 0, 0, 0
+
+        wiggle_dir = os.path.join(runtime, "wiggle")
+        os.makedirs(wiggle_dir, mode=0o700, exist_ok=True)
+        try:
+            os.chmod(wiggle_dir, 0o700)
+        except OSError:
+            pass
+
+        output = os.path.join(wiggle_dir, "wiggle-cursor.png")
+        png = b"\x89PNG\r\n\x1a\n"
+        png += png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+        png += png_chunk(b"IDAT", zlib.compress(bytes(raw), 9))
+        png += png_chunk(b"IEND", b"")
+
+        # Atomic secure creation with 0600 mode
+        tmp_fd, tmp_path = tempfile.mkstemp(prefix="cur_", suffix=".tmp", dir=wiggle_dir)
+        try:
+            os.write(tmp_fd, png)
+            os.close(tmp_fd)
+            os.chmod(tmp_path, 0o600)
+            os.replace(tmp_path, output)
+        except Exception:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            return "", 0, 0, 0, 0
+
+        return output, hot_x, hot_y, width, height
+    except (OSError, ValueError, struct.error):
+        return "", 0, 0, 0, 0
+
+def find_hyprcursor_shape(theme_dir):
+    manifest_candidates = [
+        os.path.join(theme_dir, "manifest.hl"),
+        os.path.join(theme_dir, "manifest.toml")
+    ]
+    manifest_path = next((m for m in manifest_candidates if os.path.exists(m)), None)
+    if not manifest_path:
+        return None, None
+
+    cursors_dir_name = "hyprcursors"
+    try:
+        with open(manifest_path, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if "cursors_directory" in line and "=" in line:
+                    parts = line.split("=", 1)
+                    val = parts[1].strip().strip("'\"")
+                    if val:
+                        cursors_dir_name = val
+    except Exception:
+        pass
+
+    shapes_dir = os.path.join(theme_dir, cursors_dir_name)
+    if not os.path.isdir(shapes_dir):
+        return None, None
+
+    shape_file = None
+    for cand_name in ["default", "left_ptr", "arrow"]:
+        for ext in [".hl", ".meta", ""]:
+            p = os.path.join(shapes_dir, cand_name + ext)
+            if os.path.isfile(p):
+                shape_file = p
+                break
+        if shape_file:
+            break
+
+    if not shape_file:
+        files = [f for f in os.listdir(shapes_dir) if f.endswith(".hl") or f.endswith(".meta")]
+        if files:
+            shape_file = os.path.join(shapes_dir, sorted(files)[0])
+
+    return shapes_dir, shape_file
+
+def export_hyprcursor_image(theme_dir):
+    shapes_dir, shape_file = find_hyprcursor_shape(theme_dir)
+    if not shape_file:
+        return "", 0, 0, 0, 0
+
+    best_size = 0
+    best_file = None
+    best_hx = 0
+    best_hy = 0
+
+    try:
+        with open(shape_file, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("#") or not line:
+                    continue
+                if "define_size" in line and "=" in line:
+                    parts = line.split("=", 1)
+                    args = [a.strip() for a in parts[1].split(",")]
+                    if len(args) >= 4:
+                        sz = int(args[0]) if args[0].isdigit() else 0
+                        target = args[1]
+                        hx = float(args[2]) if args[2].replace(".", "", 1).isdigit() else 0.0
+                        hy = float(args[3]) if args[3].replace(".", "", 1).isdigit() else 0.0
+
+                        file_path = os.path.join(shapes_dir, target)
+                        if os.path.isfile(file_path):
+                            if target.lower().endswith(".svg"):
+                                return file_path, int(round(hx)), int(round(hy)), 256, 256
+                            elif sz > best_size:
+                                best_size = sz
+                                best_file = file_path
+                                best_hx = int(round(hx))
+                                best_hy = int(round(hy))
+    except Exception:
+        pass
+
+    if best_file:
+        return best_file, best_hx, best_hy, best_size, best_size
+
+    return "", 0, 0, 0, 0
+
+def probe_hyprcursor(theme_dir):
+    shapes_dir, shape_file = find_hyprcursor_shape(theme_dir)
+    if not shape_file:
+        return None, "none", []
+
+    resize_algo = "none"
+    has_svg = False
+    discrete_sizes = set()
+
+    try:
+        with open(shape_file, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("#") or not line:
+                    continue
+                if "resize_algorithm" in line and "=" in line:
+                    parts = line.split("=", 1)
+                    resize_algo = parts[1].strip().lower()
+                elif "define_size" in line and "=" in line:
+                    parts = line.split("=", 1)
+                    args = [a.strip() for a in parts[1].split(",")]
+                    if len(args) >= 2:
+                        sz = int(args[0]) if args[0].isdigit() else 0
+                        target = args[1].lower()
+                        if sz == 0 or target.endswith(".svg"):
+                            has_svg = True
+                        elif sz > 0:
+                            discrete_sizes.add(sz)
+    except Exception:
+        return "hyprcursor_unknown", "none", []
+
+    if has_svg or resize_algo in ("bilinear", "nearest"):
+        return "hyprcursor_scalable", "scalable", sorted(list(discrete_sizes))
+    elif discrete_sizes:
+        return "hyprcursor_discrete", "discrete", sorted(list(discrete_sizes))
+    else:
+        return "hyprcursor_unknown", "none", []
+
+def main():
+    theme_name, theme_src = get_active_theme()
+    base_size, size_src = get_active_size()
+
+    theme_dir = find_theme_dir(theme_name)
+    backend = "unknown"
+    capability = "none"
+    available_sizes = []
+
+    if theme_dir:
+        # Check Hyprcursor first
+        h_backend, h_cap, h_sizes = probe_hyprcursor(theme_dir)
+        if h_backend:
+            backend = h_backend
+            capability = h_cap
+            available_sizes = h_sizes
+        else:
+            # Check XCursor
+            x_sizes = probe_xcursor(theme_dir)
+            if x_sizes:
+                backend = "xcursor_discrete"
+                capability = "discrete"
+                available_sizes = x_sizes
+
+    image_path = ""
+    hot_x = hot_y = image_width = image_height = 0
+
+    if theme_dir:
+        if backend.startswith("hyprcursor"):
+            image_path, hot_x, hot_y, image_width, image_height = export_hyprcursor_image(theme_dir)
+        if not image_path and (backend == "xcursor_discrete" or probe_xcursor(theme_dir)):
+            # Prefetch highest available resolution asset for scaling up to 11x
+            wanted_nominal = max(available_sizes) if available_sizes else (base_size * 4)
+            image_path, hot_x, hot_y, image_width, image_height = export_xcursor_image(
+                theme_dir, wanted_nominal
+            )
+
+    avail_str = ",".join(str(s) for s in available_sizes)
+
+    print("STATUS=OK")
+    print(f"THEME={theme_name}")
+    print(f"THEME_SRC={theme_src}")
+    print(f"SIZE={base_size}")
+    print(f"SIZE_SRC={size_src}")
+    print(f"BACKEND={backend}")
+    print(f"CAPABILITY={capability}")
+    print(f"AVAILABLE_SIZES={avail_str}")
+    print(f"CURSOR_IMAGE={image_path}")
+    print(f"CURSOR_HOTSPOT={hot_x},{hot_y}")
+    print(f"CURSOR_IMAGE_SIZE={image_width},{image_height}")
+
+if __name__ == "__main__":
+    main()
