@@ -251,7 +251,7 @@ def export_xcursor_image(theme_dir, wanted_size):
         output = os.path.join(wiggle_dir, "wiggle-cursor.png")
         png = b"\x89PNG\r\n\x1a\n"
         png += png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
-        png += png_chunk(b"IDAT", zlib.compress(bytes(raw), 9))
+        png += png_chunk(b"IDAT", zlib.compress(bytes(raw), 1))
         png += png_chunk(b"IEND", b"")
 
         # Atomic secure creation with 0600 mode

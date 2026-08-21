@@ -305,7 +305,7 @@ Item {
       id: proxyWindow
       required property var modelData
       screen: modelData
-      visible: root.proxyActive
+      visible: true
       color: "transparent"
       exclusionMode: ExclusionMode.Ignore
       WlrLayershell.namespace: "wiggle-cursor-proxy"

@@ -173,8 +173,10 @@ static void detector_init(ShakeDetector *det) {
 }
 
 static inline bool same_direction(double a, double b) {
-    const double tolerance = 1.0;
-    return (a >= -tolerance && b >= -tolerance) || (a <= tolerance && b <= tolerance);
+    if (a > 0.0 && b > 0.0) return true;
+    if (a < 0.0 && b < 0.0) return true;
+    if (fabs(a) < 1e-6 && fabs(b) < 1e-6) return true;
+    return false;
 }
 
 static bool detector_update(ShakeDetector *det, double dx, double dy, int64_t ts) {
@@ -253,7 +255,13 @@ static bool detector_update(ShakeDetector *det, double dx, double dy, int64_t ts
 
 /* ─── Device Discovery & Hotplug ─── */
 
-static int is_mouse_device(const char *path) {
+static int add_device(const char *path, DeviceState *devices, struct pollfd *pfds, int *active_count) {
+    if (*active_count >= MAX_DEVICES) return 0;
+
+    for (int i = 0; i < *active_count; i++) {
+        if (strcmp(devices[i].path, path) == 0) return 0; // Already added
+    }
+
     int fd = open(path, O_RDONLY | O_NONBLOCK);
     if (fd < 0) return 0;
 
@@ -277,27 +285,8 @@ static int is_mouse_device(const char *path) {
                            libevdev_has_event_code(dev, EV_KEY, KEY_B) ||
                            libevdev_has_event_code(dev, EV_KEY, KEY_Z);
 
-    libevdev_free(dev);
-    close(fd);
-
-    return has_rel && !is_touchpad && !is_direct && !has_keyboard_keys;
-}
-
-static int add_device(const char *path, DeviceState *devices, struct pollfd *pfds, int *active_count) {
-    if (*active_count >= MAX_DEVICES) return 0;
-
-    for (int i = 0; i < *active_count; i++) {
-        if (strcmp(devices[i].path, path) == 0) return 0; // Already added
-    }
-
-    if (!is_mouse_device(path)) return 0;
-
-    int fd = open(path, O_RDONLY | O_NONBLOCK);
-    if (fd < 0) return 0;
-
-    struct libevdev *dev = NULL;
-    int rc = libevdev_new_from_fd(fd, &dev);
-    if (rc < 0) {
+    if (!has_rel || is_touchpad || is_direct || has_keyboard_keys) {
+        libevdev_free(dev);
         close(fd);
         return 0;
     }
@@ -416,9 +405,7 @@ int main(int argc, char *argv[]) {
 
         int total_pfds = active_count + 2;
 
-        int64_t before_poll = now_ms();
-        int timeout = before_poll < track_until ? TRACK_INTERVAL_MS : -1;
-        int ret = poll(pfds, total_pfds, timeout);
+        int ret = poll(pfds, total_pfds, -1);
 
         if (ret < 0) {
             if (errno == EINTR)
@@ -496,6 +483,13 @@ int main(int argc, char *argv[]) {
                         fflush(stdout);
                         track_until = ts + TRACK_ACTIVE_WINDOW_MS;
                         next_track = ts + TRACK_INTERVAL_MS;
+                    } else if (ts < track_until && ts >= next_track) {
+                        int cur_x, cur_y;
+                        if (query_compositor_cursor(&cur_x, &cur_y)) {
+                            printf("POS %d %d\n", cur_x, cur_y);
+                            fflush(stdout);
+                        }
+                        next_track = ts + TRACK_INTERVAL_MS;
                     }
                 }
                 // All other event types (EV_KEY, EV_ABS, EV_MSC, etc.) are explicitly discarded
@@ -511,16 +505,6 @@ int main(int argc, char *argv[]) {
                 remove_device(devices, pfds, &active_count, d);
                 continue;
             }
-        }
-
-        ts = now_ms();
-        if (ts < track_until && ts >= next_track) {
-            int x, y;
-            if (query_compositor_cursor(&x, &y)) {
-                printf("POS %d %d\n", x, y);
-                fflush(stdout);
-            }
-            next_track = ts + TRACK_INTERVAL_MS;
         }
     }
 
