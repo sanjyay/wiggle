@@ -45,7 +45,7 @@ omarchy plugin remove io.github.sanjyay.wiggle
 
 ## Architecture & Security
 
-* **Permissions & Device Access:** The bundled `wiggle-monitor` helper opens pointer devices in `/dev/input/event*` using `libevdev`. In Arch Linux and Omarchy, desktop user accounts belong to the `input` group.
+* **Permissions & Device Access:** The bundled `wiggle-monitor` helper opens pointer devices in `/dev/input/event*` using `libevdev`. Stock Omarchy Quattro automatically provisions desktop users into the `input` group during system installation and user creation (`install/hardware/input-group.sh` and `bin/omarchy-provision-owner`), granting required read permissions without requiring `sudo`, custom udev rules, or privileged setup.
 * **Input Minimization:** The monitor opens only pointer devices with relative axes (`REL_X`, `REL_Y`). Keyboards, touchscreens, and touchpads are explicitly rejected. All `EV_KEY` and button events are discarded. The monitor never injects input and never uses `EVIOCGRAB`.
 * **Privacy & Memory Safety:** Cursor coordinates are queried over local Hyprland IPC sockets only while magnification is active. Coordinates exist solely in volatile memory and are never persisted to disk, logged in production, or sent over any network.
 * **No Network:** Wiggle performs zero network operations, contains no HTTP/socket network libraries, and includes no analytics, telemetry, or remote dependencies.

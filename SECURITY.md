@@ -4,9 +4,10 @@
 
 Wiggle implements a minimal-privilege architecture for cursor magnification:
 
-1. **Input Minimization:**
+1. **Input Minimization & Permissions:**
    - `scripts/wiggle-monitor` opens only devices reporting `EV_REL` with axes `REL_X` and `REL_Y`.
-   - Keyboard devices (devices reporting `KEY_A`, `KEY_SPACE`, `KEY_ENTER`), touchpads, and touchscreens are explicitly rejected.
+   - Access to `/dev/input/event*` (`0660 root:input`) is provided by standard Omarchy Quattro user provisioning (`input` supplementary group membership created at install time via `install/hardware/input-group.sh` and `bin/omarchy-provision-owner`).
+   - Keyboard devices (devices reporting alphanumeric text keys `KEY_A`, `KEY_SPACE`, `KEY_B`, `KEY_Z`), touchpads, and touchscreens are explicitly rejected.
    - All `EV_KEY` (mouse buttons and keys), `EV_ABS`, and `EV_MSC` events are discarded immediately upon reception.
    - Input grabbing (`EVIOCGRAB`) and virtual device creation (`uinput`) are never used by the monitor.
 
