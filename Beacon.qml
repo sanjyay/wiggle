@@ -30,7 +30,7 @@ Item {
   // Maximum enlarged cursor size in pixels
   readonly property int maxEnlargedSize: 96
   // How long the cursor stays enlarged after the last shake (ms)
-  readonly property int displayDurationMs: 2000
+  readonly property int displayDurationMs: 900
   // Minimum interval between cursor resize commands (ms)
   readonly property int resizeDebounceMs: 100
 
@@ -61,51 +61,24 @@ Item {
 
   // ── Cursor Theme Discovery ──────────────────────────────────────────────
   // Reads XCURSOR_THEME, XCURSOR_SIZE, HYPRCURSOR_THEME, HYPRCURSOR_SIZE
-  // from the environment. Falls back to sensible defaults only if all
-  // sources are empty.
+  // from the environment. Falls back to sensible defaults (24px, Adwaita)
+  // immediately so cursor settings are always available synchronously.
 
   function discoverCursorSettings() {
-    // Prefer HYPRCURSOR_SIZE, fall back to XCURSOR_SIZE
     var hSize = Quickshell.env("HYPRCURSOR_SIZE")
     var xSize = Quickshell.env("XCURSOR_SIZE")
     var sizeStr = hSize || xSize || ""
     var size = parseInt(sizeStr)
     if (isNaN(size) || size <= 0) {
-      console.warn("beacon: could not determine cursor size from env, defaulting to 24")
       size = 24
     }
     root.cursorSize = size
 
-    // Theme: prefer HYPRCURSOR_THEME, then XCURSOR_THEME
     var hTheme = Quickshell.env("HYPRCURSOR_THEME")
     var xTheme = Quickshell.env("XCURSOR_THEME")
-    var theme = hTheme || xTheme || ""
-    if (!theme) {
-      // Read from hyprctl if env vars are empty
-      themeDiscoveryProc.running = true
-      return
-    }
+    var theme = hTheme || xTheme || "Adwaita"
     root.cursorTheme = theme
     console.log("beacon: cursor theme=" + root.cursorTheme + " size=" + root.cursorSize)
-  }
-
-  // Fallback: ask hyprctl for the current cursor theme
-  Process {
-    id: themeDiscoveryProc
-    running: false
-    command: ["hyprctl", "-j", "cursorpos"]
-
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        // If theme is still empty, try reading the Hyprland config default
-        // For now, use "Adwaita" as the safe fallback (it's the system default)
-        if (!root.cursorTheme) {
-          root.cursorTheme = "Adwaita"
-          console.log("beacon: using fallback cursor theme=Adwaita size=" + root.cursorSize)
-        }
-      }
-    }
   }
 
   // ── Monitor Process ─────────────────────────────────────────────────────
@@ -160,6 +133,10 @@ Item {
 
   // ── Shake Handler ───────────────────────────────────────────────────────
 
+  // Track how many times we've extended to cap re-shake extensions
+  property int shakeExtensions: 0
+  readonly property int maxExtensions: 3
+
   function onShakeDetected() {
     if (!root.cursorTheme || root.cursorSize <= 0) {
       console.warn("beacon: cursor settings unknown, ignoring shake")
@@ -167,8 +144,12 @@ Item {
     }
 
     if (root.enlarged) {
-      // Already enlarged — just restart the timer (extend visibility)
-      restoreTimer.restart()
+      // Already enlarged — extend visibility but cap extensions
+      if (root.shakeExtensions < root.maxExtensions) {
+        root.shakeExtensions++
+        restoreTimer.restart()
+        console.log("beacon: shake during enlargement, extending (" + root.shakeExtensions + "/" + root.maxExtensions + ")")
+      }
       return
     }
 
@@ -182,47 +163,65 @@ Item {
     if (newSize > root.maxEnlargedSize) newSize = root.maxEnlargedSize
     if (newSize <= root.cursorSize) return  // Would be no change
 
-    setCursorProc.command = [
+    console.log("beacon: enlarging cursor " + root.cursorSize + " → " + newSize + " (theme: " + root.cursorTheme + ")")
+
+    root.shakeExtensions = 0
+    root.enlarged = true
+    cursorProc.command = [
       "hyprctl", "setcursor", root.cursorTheme, String(newSize)
     ]
-    setCursorProc.running = true
-    root.enlarged = true
+    cursorProc.running = true
     restoreTimer.restart()
+    safetyTimer.restart()
   }
 
   function restoreCursor() {
-    if (!root.enlarged) return
-
     restoreTimer.stop()
+    safetyTimer.stop()
+
+    if (!root.enlarged) return
     root.enlarged = false
+    root.shakeExtensions = 0
 
-    if (!root.cursorTheme || root.cursorSize <= 0) return
+    if (!root.cursorTheme || root.cursorSize <= 0) {
+      console.warn("beacon: cannot restore, cursor settings unknown")
+      return
+    }
 
-    restoreCursorProc.command = [
+    console.log("beacon: restoring cursor → " + root.cursorSize + " (theme: " + root.cursorTheme + ")")
+
+    // Wait briefly for any in-flight enlarge process to finish
+    if (cursorProc.running) {
+      pendingRestore = true
+      return
+    }
+
+    runRestore()
+  }
+
+  property bool pendingRestore: false
+
+  function runRestore() {
+    root.pendingRestore = false
+    cursorProc.command = [
       "hyprctl", "setcursor", root.cursorTheme, String(root.cursorSize)
     ]
-    restoreCursorProc.running = true
+    cursorProc.running = true
   }
 
-  // Process for setting cursor (enlargement)
+  // Single shared process for cursor commands (avoids race between enlarge/restore)
   Process {
-    id: setCursorProc
+    id: cursorProc
     running: false
     onExited: function(code) {
       if (code !== 0) {
-        console.warn("beacon: hyprctl setcursor (enlarge) failed with code " + code)
+        console.warn("beacon: hyprctl setcursor failed with code " + code)
+        // On failure, force state back to not-enlarged
         root.enlarged = false
       }
-    }
-  }
-
-  // Process for restoring cursor (separate to avoid conflicts)
-  Process {
-    id: restoreCursorProc
-    running: false
-    onExited: function(code) {
-      if (code !== 0) {
-        console.warn("beacon: hyprctl setcursor (restore) failed with code " + code)
+      // If a restore was pending while we were enlarging, run it now
+      if (root.pendingRestore) {
+        root.runRestore()
       }
     }
   }
@@ -236,6 +235,19 @@ Item {
     interval: root.displayDurationMs
     repeat: false
     onTriggered: {
+      console.log("beacon: restore timer fired")
+      root.restoreCursor()
+    }
+  }
+
+  // Safety timer: guarantees cursor is restored even if restoreTimer
+  // is repeatedly extended by re-shakes. Fires after 2× display duration.
+  Timer {
+    id: safetyTimer
+    interval: root.displayDurationMs * (root.maxExtensions + 2)
+    repeat: false
+    onTriggered: {
+      console.warn("beacon: safety timer fired, forcing restore")
       root.restoreCursor()
     }
   }

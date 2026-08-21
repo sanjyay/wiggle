@@ -34,25 +34,25 @@
 /* ─── Tunable Constants ─── */
 
 /* Rolling window duration for shake detection (milliseconds) */
-#define WINDOW_MS           600
+#define WINDOW_MS           500
 
 /* Minimum direction reversals required within the window */
 #define MIN_REVERSALS       3
 
-/* Minimum cumulative travel distance (pixels) within the window */
-#define MIN_TRAVEL          150
+/* Minimum cumulative travel distance (raw evdev units) within the window */
+#define MIN_TRAVEL          50
 
-/* Minimum velocity for a segment to count (pixels/ms) */
-#define MIN_VELOCITY        0.3
+/* Minimum velocity for a segment to count (units/ms) */
+#define MIN_VELOCITY        0.15
 
 /* Minimum distance for a single movement segment to count as intentional */
-#define MIN_SEGMENT_DIST    15
+#define MIN_SEGMENT_DIST    6
 
 /* Maximum samples in the rolling window */
 #define MAX_SAMPLES         256
 
 /* Cooldown after a SHAKE event (milliseconds) — prevents retriggering */
-#define COOLDOWN_MS         400
+#define COOLDOWN_MS         500
 
 /* Maximum number of mouse devices to monitor simultaneously */
 #define MAX_DEVICES         8

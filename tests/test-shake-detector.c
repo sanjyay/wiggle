@@ -19,13 +19,13 @@
 /* ─── Include the detection constants and structures directly ─── */
 /* (We duplicate the core algorithm here to test it in isolation) */
 
-#define WINDOW_MS           600
+#define WINDOW_MS           500
 #define MIN_REVERSALS       3
-#define MIN_TRAVEL          150
-#define MIN_VELOCITY        0.3
-#define MIN_SEGMENT_DIST    15
+#define MIN_TRAVEL          50
+#define MIN_VELOCITY        0.15
+#define MIN_SEGMENT_DIST    6
 #define MAX_SAMPLES         256
-#define COOLDOWN_MS         400
+#define COOLDOWN_MS         500
 
 typedef struct {
     int64_t timestamp_ms;
