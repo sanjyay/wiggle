@@ -75,6 +75,12 @@ else
   echo ""
 fi
 
+# ── 8. Cursor discovery test ──
+run_test "Deterministic cursor discovery" bash -c "
+  out=\$('$PLUGIN_DIR/scripts/beacon-discover-cursor')
+  echo \"\$out\" | grep -q 'STATUS=OK' && echo \"\$out\" | grep -q 'THEME=' && echo \"\$out\" | grep -q 'SIZE='
+"
+
 # ── Summary ──
 echo "================="
 echo "Results: $PASS passed, $FAIL failed"

@@ -1,0 +1,114 @@
+#!/bin/bash
+# beacon-discover-cursor — Deterministically discover the user's cursor theme and size
+#
+# Follows strict precedence without guessing:
+# 1. HYPRCURSOR_THEME / HYPRCURSOR_SIZE environment variables
+# 2. XCURSOR_THEME / XCURSOR_SIZE environment variables
+# 3. GSettings (org.gnome.desktop.interface cursor-theme / cursor-size)
+# 4. GTK 3/4 settings.ini
+# 5. ~/.icons/default/index.theme or /usr/share/icons/default/index.theme Inherits=
+#
+# Output format (stdout):
+#   STATUS=OK
+#   THEME=<name>
+#   THEME_SRC=<source>
+#   SIZE=<number>
+#   SIZE_SRC=<source>
+# Or on failure (exit 1):
+#   STATUS=ERROR
+#   ERROR=<reason>
+
+set -euo pipefail
+
+THEME=""
+THEME_SRC=""
+SIZE=""
+SIZE_SRC=""
+
+# ── 1. Size from environment ────────────────────────────────────────────────
+if [[ -n "${HYPRCURSOR_SIZE:-}" && "${HYPRCURSOR_SIZE}" =~ ^[0-9]+$ && "${HYPRCURSOR_SIZE}" -gt 0 ]]; then
+  SIZE="${HYPRCURSOR_SIZE}"
+  SIZE_SRC="env:HYPRCURSOR_SIZE"
+elif [[ -n "${XCURSOR_SIZE:-}" && "${XCURSOR_SIZE}" =~ ^[0-9]+$ && "${XCURSOR_SIZE}" -gt 0 ]]; then
+  SIZE="${XCURSOR_SIZE}"
+  SIZE_SRC="env:XCURSOR_SIZE"
+fi
+
+# ── 2. Theme from environment ───────────────────────────────────────────────
+if [[ -n "${HYPRCURSOR_THEME:-}" ]]; then
+  THEME="${HYPRCURSOR_THEME}"
+  THEME_SRC="env:HYPRCURSOR_THEME"
+elif [[ -n "${XCURSOR_THEME:-}" ]]; then
+  THEME="${XCURSOR_THEME}"
+  THEME_SRC="env:XCURSOR_THEME"
+fi
+
+# ── 3. GSettings (GNOME / Hyprland sync source) ─────────────────────────────
+if [[ -z "$THEME" || -z "$SIZE" ]] && command -v gsettings &>/dev/null; then
+  if [[ -z "$THEME" ]]; then
+    G_THEME=$(gsettings get org.gnome.desktop.interface cursor-theme 2>/dev/null | tr -d "'\"" || true)
+    if [[ -n "$G_THEME" && "$G_THEME" != "default" ]]; then
+      THEME="$G_THEME"
+      THEME_SRC="gsettings:cursor-theme"
+    fi
+  fi
+  if [[ -z "$SIZE" ]]; then
+    G_SIZE=$(gsettings get org.gnome.desktop.interface cursor-size 2>/dev/null || true)
+    if [[ -n "$G_SIZE" && "$G_SIZE" =~ ^[0-9]+$ && "$G_SIZE" -gt 0 ]]; then
+      SIZE="$G_SIZE"
+      SIZE_SRC="gsettings:cursor-size"
+    fi
+  fi
+fi
+
+# ── 4. GTK 3/4 config files ─────────────────────────────────────────────────
+if [[ -z "$THEME" || -z "$SIZE" ]]; then
+  for gtk_ini in "$HOME/.config/gtk-3.0/settings.ini" "$HOME/.config/gtk-4.0/settings.ini"; do
+    if [[ -f "$gtk_ini" ]]; then
+      if [[ -z "$THEME" ]]; then
+        K_THEME=$(grep -E '^\s*gtk-cursor-theme-name\s*=' "$gtk_ini" 2>/dev/null | head -n1 | cut -d'=' -f2- | tr -d " '\"" || true)
+        if [[ -n "$K_THEME" && "$K_THEME" != "default" ]]; then
+          THEME="$K_THEME"
+          THEME_SRC="gtk:$(basename "$(dirname "$gtk_ini")")"
+        fi
+      fi
+      if [[ -z "$SIZE" ]]; then
+        K_SIZE=$(grep -E '^\s*gtk-cursor-theme-size\s*=' "$gtk_ini" 2>/dev/null | head -n1 | cut -d'=' -f2- | tr -d " '\"" || true)
+        if [[ -n "$K_SIZE" && "$K_SIZE" =~ ^[0-9]+$ && "$K_SIZE" -gt 0 ]]; then
+          SIZE="$K_SIZE"
+          SIZE_SRC="gtk:$(basename "$(dirname "$gtk_ini")")"
+        fi
+      fi
+    fi
+  done
+fi
+
+# ── 5. System/User default index.theme (Inherits=) ──────────────────────────
+if [[ -z "$THEME" ]]; then
+  for idx in "$HOME/.icons/default/index.theme" "$HOME/.local/share/icons/default/index.theme" "/usr/share/icons/default/index.theme"; do
+    if [[ -f "$idx" ]]; then
+      I_THEME=$(grep -E '^\s*Inherits\s*=' "$idx" 2>/dev/null | head -n1 | cut -d'=' -f2- | tr -d " '\"" || true)
+      if [[ -n "$I_THEME" ]]; then
+        THEME="$I_THEME"
+        THEME_SRC="index.theme:$idx"
+        break
+      fi
+    fi
+  done
+fi
+
+# ── 6. Validation & Output ──────────────────────────────────────────────────
+if [[ -n "$THEME" && -n "$SIZE" ]]; then
+  echo "STATUS=OK"
+  echo "THEME=$THEME"
+  echo "THEME_SRC=$THEME_SRC"
+  echo "SIZE=$SIZE"
+  echo "SIZE_SRC=$SIZE_SRC"
+  exit 0
+else
+  echo "STATUS=ERROR"
+  echo "THEME=${THEME:-<unknown>}"
+  echo "SIZE=${SIZE:-<unknown>}"
+  echo "ERROR=Could not deterministically discover cursor theme or size"
+  exit 1
+fi
