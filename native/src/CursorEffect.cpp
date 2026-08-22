@@ -89,6 +89,13 @@ void CursorEffect::restore() {
     appliedBufferScale_  = 1.0F;
 }
 
+void CursorEffect::setMaximumScale(double maximumScale) {
+    settings_.maximumScale = std::max(maximumScale, 1.0);
+    settings_.initialScale = std::min(settings_.initialScale, settings_.maximumScale);
+    if (active_ && targetScale_ > settings_.maximumScale)
+        beginTransition(settings_.maximumScale, Clock::now());
+}
+
 bool CursorEffect::active() const {
     return active_;
 }
@@ -141,4 +148,3 @@ double CursorEffect::easeInOutCubic(double progress) {
     const auto shifted = -2.0 * progress + 2.0;
     return 1.0 - shifted * shifted * shifted / 2.0;
 }
-

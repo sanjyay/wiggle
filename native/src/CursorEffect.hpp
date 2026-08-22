@@ -25,6 +25,7 @@ class CursorEffect {
     bool trigger(Clock::time_point now = Clock::now());
     void tick(Clock::time_point now = Clock::now());
     void restore();
+    void setMaximumScale(double maximumScale);
 
     [[nodiscard]] bool active() const;
     [[nodiscard]] double scale() const;

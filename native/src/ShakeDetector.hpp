@@ -23,6 +23,7 @@ class ShakeDetector {
 
     bool update(Vector2D position, Clock::time_point timestamp = Clock::now());
     void reset();
+    void setSensitivity(double sensitivity);
 
     [[nodiscard]] std::size_t retainedSamples() const;
 
@@ -37,4 +38,3 @@ class ShakeDetector {
     Settings           settings_;
     std::deque<Sample> history_;
 };
-

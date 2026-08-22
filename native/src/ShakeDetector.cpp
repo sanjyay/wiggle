@@ -67,7 +67,11 @@ void ShakeDetector::reset() {
     history_.clear();
 }
 
+void ShakeDetector::setSensitivity(double sensitivity) {
+    settings_.sensitivity = std::max(sensitivity, 1.0);
+    reset();
+}
+
 std::size_t ShakeDetector::retainedSamples() const {
     return history_.size();
 }
-

@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <stdexcept>
 #include <string>
 
@@ -7,6 +8,7 @@
 
 #include "CursorEffect.hpp"
 #include "CursorTracker.hpp"
+#include "RuntimeConfig.hpp"
 #include "ShakeDetector.hpp"
 
 namespace {
@@ -19,6 +21,20 @@ CursorEffect cursorEffect;
 ShakeDetector shakeDetector;
 CHyprSignalListener cursorMoveListener;
 CHyprSignalListener tickListener;
+UP<RuntimeConfig> runtimeConfig;
+bool enabled = true;
+
+void applyConfiguration(const RuntimeConfig::Values& values) {
+    enabled = values.enabled;
+    shakeDetector.setSensitivity(values.sensitivity);
+    cursorEffect.setMaximumScale(values.maximumScale);
+
+    if (!enabled) {
+        shakeDetector.reset();
+        cursorEffect.restore();
+    }
+
+}
 } // namespace
 
 APICALL EXPORT std::string PLUGIN_API_VERSION() {
@@ -39,9 +55,13 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         throw std::runtime_error("wiggle-native: Hyprland ABI mismatch");
     }
 
+    runtimeConfig = makeUnique<RuntimeConfig>(applyConfiguration);
+    if (!runtimeConfig->start())
+        throw std::runtime_error("wiggle-native: failed to watch runtime configuration");
+
     cursorMoveListener = Event::bus()->m_events.input.mouse.move.listen([](Vector2D position, Event::SCallbackInfo&) {
         cursorTracker.record(position);
-        if (shakeDetector.update(position)) {
+        if (enabled && shakeDetector.update(position)) {
             Log::logger->log(Log::INFO, "[wiggle-native] shake detected");
             cursorEffect.trigger();
         }
@@ -58,6 +78,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 APICALL EXPORT void PLUGIN_EXIT() {
     cursorMoveListener.reset();
     tickListener.reset();
+    runtimeConfig.reset();
     cursorEffect.restore();
 
     Log::logger->log(Log::INFO, "[wiggle-native] unloaded version {}", PLUGIN_VERSION);
