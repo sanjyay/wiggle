@@ -22,7 +22,12 @@ Wiggle implements a minimal-privilege architecture for cursor magnification:
    - Temporary cursor assets are stored exclusively in `$XDG_RUNTIME_DIR/wiggle/` with directory mode `0700` and file mode `0600` using secure atomic creation.
    - Never falls back to shared `/tmp`.
 
-5. **Fail-Safe & Resource Lifecycle:**
+5. **Untrusted Cursor Themes:**
+   - Xcursor files are treated as untrusted binary input. The parser validates the fixed header, version, bounded TOC count, complete TOC extent, absolute chunk offsets, chunk headers, hotspots, and complete pixel payloads before decoding.
+   - Files are limited to 32 MiB, TOCs to 4096 entries, dimensions to 1024 pixels per axis, and decoded images to 262,144 pixels (1 MiB of encoded ARGB). This permits normal and high-DPI cursor assets, including 256px themes, without allowing metadata-driven unbounded allocations or loops.
+   - Malformed image entries and candidate files are rejected; discovery continues to later valid entries or cursor-name candidates when available.
+
+6. **Fail-Safe & Resource Lifecycle:**
    - `scripts/wiggle-monitor` registers `PR_SET_PDEATHSIG` with `SIGTERM` and monitors STDIN pipe EOF.
    - Normal termination signals (`SIGTERM`, `SIGINT`, `SIGHUP`, `SIGQUIT`, `SIGPIPE`) stop the event loop so its cleanup path can request `cursor:invisible false` without performing unsafe socket work inside the signal handler.
    - QML handoff failures keep a tracking 1x proxy visible until native-cursor restoration is acknowledged. Abrupt process or system failure can still prevent cleanup from completing.

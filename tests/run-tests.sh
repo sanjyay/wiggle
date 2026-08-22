@@ -77,6 +77,7 @@ fi
 
 # ── 8. Cursor discovery & capability unit tests ──
 run_test "Cursor capabilities unit tests" python3 "$TEST_DIR/test-cursor-capabilities.py"
+run_test "Untrusted Xcursor parser security tests" python3 "$TEST_DIR/test-xcursor-parser.py"
 
 # ── 9. Live cursor capability discovery ──
 run_test "Deterministic cursor discovery" bash -c "

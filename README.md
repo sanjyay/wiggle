@@ -67,6 +67,7 @@ omarchy plugin remove io.github.sanjyay.wiggle
 * **Privacy & Memory Safety:** Cursor coordinates are queried over local Hyprland IPC when a shake is detected and while the proxy may need to track the pointer. Coordinates exist solely in volatile memory and are never persisted to disk, logged in production, or sent over any network.
 * **No Network:** Wiggle performs zero network operations, contains no HTTP/socket network libraries, and includes no analytics, telemetry, or remote dependencies.
 * **Filesystem Safety:** Temporary extracted cursor assets are written exclusively to `$XDG_RUNTIME_DIR/wiggle/` with strict `0700` directory and `0600` file permissions.
+* **Untrusted Theme Files:** Xcursor headers, TOCs, offsets, dimensions, hotspots, and pixel payloads are bounds-checked before decoding. Malformed candidates are skipped in favor of a valid fallback when available.
 * **Bundled Helper:** Omarchy installs plugins as plain Git checkouts and does not run build hooks. The x86-64 `scripts/wiggle-monitor` executable is therefore included alongside its complete C source and reproducible build script. It requires no `sudo` or installation-time compilation.
 
 ---

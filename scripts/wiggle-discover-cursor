@@ -42,6 +42,152 @@ SEARCH_PATHS = [
     "/usr/local/share/icons",
 ]
 
+# Xcursor 1.0 file constants. The format's own dimension ceiling is 32767,
+# which is far too large for a startup-time cursor preview. Real cursor themes
+# normally provide assets up to 256px. These application limits still permit a
+# 512x512 high-DPI image (or a narrow image up to 1024px on either axis) while
+# bounding encoded pixels, decoded PNG memory, parsing work, and file reads.
+XCURSOR_MAGIC = 0x72756358
+XCURSOR_FILE_VERSION = 0x00010000
+XCURSOR_IMAGE_TYPE = 0xfffd0002
+XCURSOR_IMAGE_VERSION = 1
+XCURSOR_FILE_HEADER_SIZE = 16
+XCURSOR_TOC_ENTRY_SIZE = 12
+XCURSOR_CHUNK_HEADER_SIZE = 16
+XCURSOR_IMAGE_HEADER_SIZE = 36
+MAX_XCURSOR_FILE_BYTES = 32 * 1024 * 1024
+MAX_XCURSOR_TOC_ENTRIES = 4096
+MAX_CURSOR_DIMENSION = 1024
+MAX_CURSOR_PIXELS = 512 * 512
+
+
+def _range_fits(total_size, offset, length):
+    """Return whether [offset, offset + length) is inside a byte buffer."""
+    return (offset >= 0 and length >= 0 and offset <= total_size and
+            length <= total_size - offset)
+
+
+def parse_xcursor(data):
+    """Parse bounded Xcursor image metadata from arbitrary bytes.
+
+    Invalid file-level structure rejects the file. Invalid image TOC entries
+    are skipped so a later valid image in the same cursor can still be used.
+    Returned pixel offsets always identify a complete, bounded payload.
+    """
+    if not isinstance(data, (bytes, bytearray, memoryview)):
+        return []
+    file_size = len(data)
+    if file_size > MAX_XCURSOR_FILE_BYTES or file_size < XCURSOR_FILE_HEADER_SIZE:
+        return []
+
+    try:
+        magic, header_size, version, ntoc = struct.unpack_from("<IIII", data, 0)
+    except struct.error:
+        return []
+    if (magic != XCURSOR_MAGIC or version != XCURSOR_FILE_VERSION or
+            header_size < XCURSOR_FILE_HEADER_SIZE or header_size > file_size or
+            ntoc > MAX_XCURSOR_TOC_ENTRIES):
+        return []
+
+    # Division is intentionally performed before multiplication: this proves
+    # both that the table-size multiplication is bounded and that the complete
+    # TOC fits in the actual file.
+    if ntoc > (file_size - header_size) // XCURSOR_TOC_ENTRY_SIZE:
+        return []
+    toc_size = ntoc * XCURSOR_TOC_ENTRY_SIZE
+    toc_end = header_size + toc_size
+
+    images = []
+    for index in range(ntoc):
+        toc_offset = header_size + index * XCURSOR_TOC_ENTRY_SIZE
+        try:
+            entry_type, nominal_size, chunk_offset = struct.unpack_from(
+                "<III", data, toc_offset
+            )
+        except struct.error:
+            return []  # Defensive; the complete TOC was already proven above.
+        if entry_type != XCURSOR_IMAGE_TYPE:
+            continue
+        if not (1 <= nominal_size <= MAX_CURSOR_DIMENSION):
+            continue
+        if (chunk_offset < toc_end or
+                not _range_fits(file_size, chunk_offset, XCURSOR_CHUNK_HEADER_SIZE)):
+            continue
+
+        try:
+            chunk_header_size, chunk_type, chunk_subtype, chunk_version = \
+                struct.unpack_from("<IIII", data, chunk_offset)
+        except struct.error:
+            continue
+        if (chunk_type != XCURSOR_IMAGE_TYPE or chunk_type != entry_type or
+                chunk_subtype != nominal_size or
+                chunk_version != XCURSOR_IMAGE_VERSION or
+                chunk_header_size < XCURSOR_IMAGE_HEADER_SIZE or
+                not _range_fits(file_size, chunk_offset, chunk_header_size)):
+            continue
+
+        try:
+            width, height, hot_x, hot_y, delay = struct.unpack_from(
+                "<IIIII", data, chunk_offset + XCURSOR_CHUNK_HEADER_SIZE
+            )
+        except struct.error:
+            continue
+        if (width == 0 or height == 0 or
+                width > MAX_CURSOR_DIMENSION or height > MAX_CURSOR_DIMENSION or
+                width > MAX_CURSOR_PIXELS // height or
+                hot_x >= width or hot_y >= height):
+            continue
+
+        pixel_count = width * height
+        pixel_bytes = pixel_count * 4
+        pixel_offset = chunk_offset + chunk_header_size
+        if not _range_fits(file_size, pixel_offset, pixel_bytes):
+            continue
+
+        images.append({
+            "nominal": nominal_size,
+            "width": width,
+            "height": height,
+            "hot_x": hot_x,
+            "hot_y": hot_y,
+            "delay": delay,
+            "pixel_offset": pixel_offset,
+            "pixel_bytes": pixel_bytes,
+        })
+    return images
+
+
+def _read_xcursor(path):
+    """Read a regular cursor file without permitting an unbounded allocation."""
+    try:
+        with open(path, "rb") as cursor:
+            data = cursor.read(MAX_XCURSOR_FILE_BYTES + 1)
+        return data if len(data) <= MAX_XCURSOR_FILE_BYTES else None
+    except OSError:
+        return None
+
+
+def iter_xcursor_files(theme_dir):
+    """Yield distinct candidate cursor files in preferred/fallback order."""
+    cursors_dir = os.path.join(theme_dir, "cursors")
+    if not os.path.isdir(cursors_dir):
+        return
+    names = ["default", "left_ptr", "arrow", "top_left_arrow"]
+    try:
+        names.extend(sorted(os.listdir(cursors_dir)))
+    except OSError:
+        pass
+    seen = set()
+    for name in names:
+        path = os.path.join(cursors_dir, name)
+        try:
+            real_path = os.path.realpath(path)
+            if real_path not in seen and os.path.isfile(real_path):
+                seen.add(real_path)
+                yield real_path
+        except OSError:
+            continue
+
 def get_active_theme():
     # 1. Check HYPRCURSOR_THEME
     val = os.environ.get("HYPRCURSOR_THEME", "").strip()
@@ -149,52 +295,17 @@ def find_theme_dir(theme_name):
     return None
 
 def probe_xcursor(theme_dir):
-    cursor_candidates = ["default", "left_ptr", "arrow", "top_left_arrow"]
-    cursor_file = None
-    for cand in cursor_candidates:
-        p = os.path.join(theme_dir, "cursors", cand)
-        if os.path.isfile(p):
-            cursor_file = p
-            break
-
-    if not cursor_file:
-        cursors_dir = os.path.join(theme_dir, "cursors")
-        if os.path.isdir(cursors_dir):
-            for f in sorted(os.listdir(cursors_dir)):
-                p = os.path.join(cursors_dir, f)
-                if os.path.isfile(p) and not os.path.islink(p):
-                    cursor_file = p
-                    break
-
-    if not cursor_file:
-        return []
-
-    try:
-        with open(cursor_file, "rb") as f:
-            header = f.read(16)
-            if len(header) < 16:
-                return []
-            magic, _, _, ntoc = struct.unpack("<IIII", header)
-            if magic != 0x72756358:  # 'Xcur'
-                return []
-            sizes = set()
-            for _ in range(ntoc):
-                entry = f.read(12)
-                if len(entry) < 12:
-                    break
-                etype, subtype, _ = struct.unpack("<III", entry)
-                if etype == 0xfffd0002:  # XCURSOR_IMAGE_TYPE
-                    sizes.add(subtype)
-            return sorted(list(sizes))
-    except Exception:
-        return []
+    for cursor_file in iter_xcursor_files(theme_dir):
+        data = _read_xcursor(cursor_file)
+        if data is None:
+            continue
+        images = parse_xcursor(data)
+        if images:
+            return sorted({image["nominal"] for image in images})
+    return []
 
 def find_xcursor_file(theme_dir):
-    for name in ("default", "left_ptr", "arrow", "top_left_arrow"):
-        path = os.path.join(theme_dir, "cursors", name)
-        if os.path.isfile(path):
-            return os.path.realpath(path)
-    return None
+    return next(iter_xcursor_files(theme_dir), None)
 
 def png_chunk(kind, payload):
     return (struct.pack(">I", len(payload)) + kind + payload +
@@ -202,31 +313,30 @@ def png_chunk(kind, payload):
 
 def export_xcursor_image(theme_dir, wanted_size):
     """Export the nearest left-pointer frame as straight-alpha RGBA PNG."""
-    cursor_file = find_xcursor_file(theme_dir)
-    if not cursor_file:
-        return "", 0, 0, 0, 0
-    try:
-        with open(cursor_file, "rb") as f:
-            magic, header_len, _, ntoc = struct.unpack("<IIII", f.read(16))
-            if magic != 0x72756358:
-                return "", 0, 0, 0, 0
-            f.seek(header_len)
-            entries = [struct.unpack("<III", f.read(12)) for _ in range(ntoc)]
-            images = [entry for entry in entries if entry[0] == 0xfffd0002]
-            if not images:
-                return "", 0, 0, 0, 0
-            _, nominal, offset = min(images, key=lambda entry: abs(entry[1] - wanted_size))
-            f.seek(offset)
-            chunk_header, kind, subtype, _ = struct.unpack("<IIII", f.read(16))
-            if kind != 0xfffd0002:
-                return "", 0, 0, 0, 0
-            width, height, hot_x, hot_y, _ = struct.unpack("<IIIII", f.read(20))
-            pixels = struct.unpack("<%dI" % (width * height), f.read(width * height * 4))
+    for cursor_file in iter_xcursor_files(theme_dir):
+        data = _read_xcursor(cursor_file)
+        if data is None:
+            continue
+        images = parse_xcursor(data)
+        if not images:
+            continue
+        image = min(images, key=lambda item: abs(item["nominal"] - wanted_size))
+        width = image["width"]
+        height = image["height"]
+        hot_x = image["hot_x"]
+        hot_y = image["hot_y"]
+        pixel_offset = image["pixel_offset"]
 
-        raw = bytearray()
+        # Allocation is bounded by MAX_CURSOR_PIXELS above. Decode one pixel at
+        # a time so attacker-controlled dimensions cannot create a giant tuple.
+        stride = 1 + width * 4
+        raw = bytearray(stride * height)
         for y in range(height):
-            raw.append(0)
-            for pixel in pixels[y * width:(y + 1) * width]:
+            row_offset = y * stride
+            raw[row_offset] = 0  # PNG filter type: None
+            for x in range(width):
+                source_offset = pixel_offset + (y * width + x) * 4
+                pixel = struct.unpack_from("<I", data, source_offset)[0]
                 a = (pixel >> 24) & 255
                 r = (pixel >> 16) & 255
                 g = (pixel >> 8) & 255
@@ -235,7 +345,8 @@ def export_xcursor_image(theme_dir, wanted_size):
                     r = min(255, (r * 255 + a // 2) // a)
                     g = min(255, (g * 255 + a // 2) // a)
                     b = min(255, (b * 255 + a // 2) // a)
-                raw.extend((r, g, b, a))
+                dest = row_offset + 1 + x * 4
+                raw[dest:dest + 4] = bytes((r, g, b, a))
 
         runtime = os.environ.get("XDG_RUNTIME_DIR")
         if not runtime or not os.path.isdir(runtime):
@@ -267,8 +378,7 @@ def export_xcursor_image(theme_dir, wanted_size):
             return "", 0, 0, 0, 0
 
         return output, hot_x, hot_y, width, height
-    except (OSError, ValueError, struct.error):
-        return "", 0, 0, 0, 0
+    return "", 0, 0, 0, 0
 
 def find_hyprcursor_shape(theme_dir):
     manifest_candidates = [
