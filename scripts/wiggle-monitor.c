@@ -41,6 +41,7 @@
 #define MAX_DEVICES             16
 #define TRACK_INTERVAL_MS       16
 #define TRACK_ACTIVE_WINDOW_MS  2500
+#define IPC_RESPONSE_TIMEOUT_MS 300
 
 /* ─── Data Structures ─── */
 
@@ -75,33 +76,69 @@ static ShakeDetector g_detector = {0};
 
 /* ─── Compositor IPC & Fail-Safe ─── */
 
-static void set_compositor_cursor_invisible(bool invisible) {
+static bool response_is_ok(const char *response) {
+    while (*response == ' ' || *response == '\t' || *response == '\r' || *response == '\n') {
+        response++;
+    }
+    return strncmp(response, "ok", 2) == 0;
+}
+
+static bool write_all(int fd, const char *data, size_t length) {
+    size_t offset = 0;
+    while (offset < length) {
+        ssize_t written = write(fd, data + offset, length - offset);
+        if (written < 0 && errno == EINTR) continue;
+        if (written <= 0) return false;
+        offset += (size_t)written;
+    }
+    return true;
+}
+
+static bool set_compositor_cursor_invisible(bool invisible) {
     const char *runtime = getenv("XDG_RUNTIME_DIR");
     const char *signature = getenv("HYPRLAND_INSTANCE_SIGNATURE");
-    if (!runtime || !signature) return;
+    if (!runtime || !signature) return false;
 
     char path[sizeof(((struct sockaddr_un *)0)->sun_path)];
     int length = snprintf(path, sizeof(path), "%s/hypr/%s/.socket.sock",
                           runtime, signature);
-    if (length < 0 || (size_t)length >= sizeof(path)) return;
+    if (length < 0 || (size_t)length >= sizeof(path)) return false;
 
     int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (fd < 0) return;
+    if (fd < 0) return false;
     struct sockaddr_un addr = { .sun_family = AF_UNIX };
     snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         close(fd);
-        return;
+        return false;
     }
     char request[128];
     int req_len = snprintf(request, sizeof(request),
                            "/eval hl.config({ cursor = { invisible = %s } })",
                            invisible ? "true" : "false");
-    if (req_len > 0) {
-        ssize_t written = write(fd, request, req_len);
-        (void)written;
+    if (req_len <= 0 || !write_all(fd, request, (size_t)req_len)) {
+        close(fd);
+        return false;
     }
+
+    if (shutdown(fd, SHUT_WR) < 0) {
+        close(fd);
+        return false;
+    }
+
+    struct pollfd response_poll = { .fd = fd, .events = POLLIN };
+    int ready = poll(&response_poll, 1, IPC_RESPONSE_TIMEOUT_MS);
+    if (ready <= 0 || !(response_poll.revents & POLLIN)) {
+        close(fd);
+        return false;
+    }
+
+    char response[128];
+    ssize_t used = read(fd, response, sizeof(response) - 1);
     close(fd);
+    if (used <= 0) return false;
+    response[used] = '\0';
+    return response_is_ok(response);
 }
 
 static int query_compositor_cursor(int *x, int *y) {
@@ -123,7 +160,17 @@ static int query_compositor_cursor(int *x, int *y) {
         return 0;
     }
     static const char request[] = "j/cursorpos";
-    if (write(fd, request, sizeof(request) - 1) < 0) {
+    if (!write_all(fd, request, sizeof(request) - 1)) {
+        close(fd);
+        return 0;
+    }
+    if (shutdown(fd, SHUT_WR) < 0) {
+        close(fd);
+        return 0;
+    }
+    struct pollfd response_poll = { .fd = fd, .events = POLLIN };
+    int ready = poll(&response_poll, 1, IPC_RESPONSE_TIMEOUT_MS);
+    if (ready <= 0 || !(response_poll.revents & POLLIN)) {
         close(fd);
         return 0;
     }
@@ -154,13 +201,12 @@ static int64_t now_ms(void) {
 }
 
 static void emergency_cleanup(void) {
-    set_compositor_cursor_invisible(false);
+    (void)set_compositor_cursor_invisible(false);
 }
 
 static void signal_handler(int sig) {
     (void)sig;
-    emergency_cleanup();
-    _exit(0);
+    g_running = 0;
 }
 
 /* ─── Shake Detector ─── */
@@ -342,18 +388,15 @@ int main(int argc, char *argv[]) {
     // Deliver SIGTERM automatically if parent (Quickshell) terminates/crashes
     prctl(PR_SET_PDEATHSIG, SIGTERM);
 
-    atexit(emergency_cleanup);
-
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = signal_handler;
+    sigemptyset(&sa.sa_mask);
     sigaction(SIGTERM, &sa, NULL);
     sigaction(SIGINT,  &sa, NULL);
     sigaction(SIGHUP,  &sa, NULL);
     sigaction(SIGQUIT, &sa, NULL);
     sigaction(SIGPIPE, &sa, NULL);
-    sigaction(SIGSEGV, &sa, NULL);
-    sigaction(SIGABRT, &sa, NULL);
 
     setvbuf(stdout, NULL, _IOLBF, 0);
 
@@ -392,6 +435,7 @@ int main(int argc, char *argv[]) {
 
     int64_t track_until = 0;
     int64_t next_track = 0;
+    bool compositor_cursor_hidden = false;
 
     while (g_running) {
         // Place inotify and stdin at the end of pollfds
@@ -426,15 +470,28 @@ int main(int argc, char *argv[]) {
             }
             if (n > 0) {
                 cmd_buf[n] = '\0';
-                if (strstr(cmd_buf, "HIDE")) {
-                    set_compositor_cursor_invisible(true);
-                } else if (strstr(cmd_buf, "SHOW")) {
-                    set_compositor_cursor_invisible(false);
+                char *saveptr = NULL;
+                for (char *command = strtok_r(cmd_buf, "\r\n", &saveptr);
+                    command != NULL;
+                    command = strtok_r(NULL, "\r\n", &saveptr)) {
+                    if (strcmp(command, "HIDE") == 0) {
+                        /* Track conservatively until SHOW is positively acknowledged. */
+                        compositor_cursor_hidden = true;
+                        bool hidden = set_compositor_cursor_invisible(true);
+                        printf(hidden ? "HIDDEN\n" : "HIDE_FAILED\n");
+                        fflush(stdout);
+                    } else if (strcmp(command, "SHOW") == 0) {
+                        bool shown = set_compositor_cursor_invisible(false);
+                        if (shown) compositor_cursor_hidden = false;
+                        printf(shown ? "SHOWN\n" : "SHOW_FAILED\n");
+                        fflush(stdout);
+                    }
                 }
             }
         }
 
         int64_t ts = now_ms();
+        bool handoff_pending = false;
 
         // Handle inotify events (new mouse plugged in or created)
         if (inotify_fd >= 0 && (pfds[inotify_idx].revents & POLLIN)) {
@@ -475,15 +532,18 @@ int main(int argc, char *argv[]) {
                         continue;
 
                     if (detector_update(&g_detector, dx, dy, ts)) {
-                        printf("SHAKE\n");
                         int cur_x, cur_y;
                         if (query_compositor_cursor(&cur_x, &cur_y)) {
-                            printf("POS %d %d\n", cur_x, cur_y);
+                            printf("SHAKE %d %d\n", cur_x, cur_y);
+                            fflush(stdout);
+                            track_until = ts + TRACK_ACTIVE_WINDOW_MS;
+                            next_track = ts + TRACK_INTERVAL_MS;
+                            handoff_pending = true;
+                            break;
+                        } else {
+                            fprintf(stderr, "wiggle-monitor: discarded shake without an exact cursor position\n");
                         }
-                        fflush(stdout);
-                        track_until = ts + TRACK_ACTIVE_WINDOW_MS;
-                        next_track = ts + TRACK_INTERVAL_MS;
-                    } else if (ts < track_until && ts >= next_track) {
+                    } else if ((ts < track_until || compositor_cursor_hidden) && ts >= next_track) {
                         int cur_x, cur_y;
                         if (query_compositor_cursor(&cur_x, &cur_y)) {
                             printf("POS %d %d\n", cur_x, cur_y);
@@ -505,6 +565,8 @@ int main(int argc, char *argv[]) {
                 remove_device(devices, pfds, &active_count, d);
                 continue;
             }
+
+            if (handoff_pending) break;
         }
     }
 

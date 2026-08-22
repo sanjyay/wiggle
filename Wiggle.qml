@@ -30,6 +30,7 @@ Item {
   readonly property int animationDurationMs: 200
   readonly property int deflateTimeoutMs: 2000
   readonly property int failsafeTimeoutMs: 5000
+  readonly property int cursorHandoffTimeoutMs: 350
 
   // ── Universal Theme & Asset State ───────────────────────────────────────
   property string cursorTheme: ""
@@ -51,6 +52,18 @@ Item {
   property int cursorY: -1000
   property double lastShakeTimestamp: 0
   property bool monitorStarted: false
+  property bool awaitingProxyFrame: false
+  property bool awaitingHiddenAck: false
+  property bool awaitingShownAck: false
+  property bool cursorRestoreDegraded: false
+  property bool pendingActivation: false
+  property real pendingMagnification: 1.0
+  property int showRetryCount: 0
+
+  // ── Render Warm-up State ────────────────────────────────────────────────
+  property int warmupWindowCount: 0
+  property int warmupWindowCompleteCount: 0
+  property bool renderWarmupComplete: false
 
   // ── Resolve paths ───────────────────────────────────────────────────────
   readonly property string pluginDir: {
@@ -68,8 +81,8 @@ Item {
   }
 
   Component.onDestruction: {
-    stopMonitor()
     restoreState()
+    stopMonitor()
   }
 
   // ── Cursor Discovery ────────────────────────────────────────────────────
@@ -160,14 +173,29 @@ Item {
       splitMarker: "\n"
       onRead: function(data) {
         var line = data.trim()
-        if (line === "SHAKE") {
-          root.onShakeDetected()
+        if (line.startsWith("SHAKE ")) {
+          var shakeFields = line.split(" ")
+          if (shakeFields.length === 3) {
+            var shakeX = parseInt(shakeFields[1])
+            var shakeY = parseInt(shakeFields[2])
+            if (!isNaN(shakeX) && !isNaN(shakeY)) {
+              root.onShakeDetected(shakeX, shakeY)
+            }
+          }
         } else if (line.startsWith("POS ")) {
           var fields = line.split(" ")
           if (fields.length === 3) {
             root.cursorX = parseInt(fields[1])
             root.cursorY = parseInt(fields[2])
           }
+        } else if (line === "HIDDEN") {
+          root.onCursorHidden()
+        } else if (line === "HIDE_FAILED") {
+          root.abortActivation("native cursor hide failed")
+        } else if (line === "SHOWN") {
+          root.onCursorShown()
+        } else if (line === "SHOW_FAILED") {
+          root.onCursorShowFailed()
         }
       }
     }
@@ -206,40 +234,103 @@ Item {
 
   // ── KDE-Style Shake Handling & Magnification ─────────────────────────────
 
-  function onShakeDetected() {
+  function onShakeDetected(shakeX, shakeY) {
     if (!root.cursorConfigured || root.cursorImage === "" || root.cursorCapability === "none") {
       return
     }
 
+    // The position and baseline scale must be committed before proxy activation.
+    root.cursorX = shakeX
+    root.cursorY = shakeY
     root.lastShakeTimestamp = Date.now()
+
+    // If native-cursor restoration was not confirmed, prioritize making the
+    // native cursor visible over starting another magnification cycle.
+    if (root.awaitingShownAck || root.cursorRestoreDegraded) {
+      root.awaitingShownAck = true
+      root.cursorRestoreDegraded = false
+      root.showRetryCount = 0
+      requestCursorInvisible(false, "restore native cursor before reactivation")
+      handoffTimer.restart()
+      return
+    }
 
     var newTarget
     if (root.targetMagnification <= 1.0) {
       newTarget = root.initialMagnification
-      activateProxy()
+      if (!root.renderWarmupComplete) {
+        root.pendingActivation = true
+        root.pendingMagnification = newTarget
+        warmupWaitTimer.restart()
+        return
+      }
+      beginActivation(newTarget)
     } else {
       newTarget = root.targetMagnification + root.overMagnification
+      root.targetMagnification = newTarget
+      if (root.awaitingProxyFrame || root.awaitingHiddenAck) {
+        return
+      }
+      startScaleAnimation(newTarget)
     }
-
-    root.targetMagnification = newTarget
-
-    // Rebase animation smoothly from current rendered magnification to new target
-    scaleAnimation.stop()
-    scaleAnimation.from = root.currentMagnification
-    scaleAnimation.to = newTarget
-    scaleAnimation.start()
 
     console.log("wiggle: shake detected -> target magnification=" + newTarget +
                 "x (current=" + root.currentMagnification.toFixed(2) + "x)")
 
-    deflateTimer.restart()
     safetyTimer.restart()
   }
 
-  function activateProxy() {
-    root.proxyActive = true
+  function beginActivation(newTarget) {
+    warmupWaitTimer.stop()
+    root.pendingActivation = false
+    root.pendingMagnification = 1.0
     root.currentMagnification = 1.0
-    requestCursorInvisible(true, "cursor proxy activated")
+    root.targetMagnification = newTarget
+    root.proxyActive = true
+    root.cursorRestoreDegraded = false
+    root.awaitingProxyFrame = true
+    handoffTimer.restart()
+  }
+
+  function onProxyFramePresented() {
+    if (!root.awaitingProxyFrame || !root.proxyActive) return
+    root.awaitingProxyFrame = false
+    root.awaitingHiddenAck = true
+    requestCursorInvisible(true, "1x cursor proxy frame presented")
+  }
+
+  function startScaleAnimation(newTarget) {
+    scaleAnimation.stop()
+    scaleAnimation.from = root.currentMagnification
+    scaleAnimation.to = newTarget
+    scaleAnimation.start()
+    deflateTimer.restart()
+  }
+
+  function onCursorHidden() {
+    if (!root.awaitingHiddenAck || !root.proxyActive) return
+    handoffTimer.stop()
+    root.awaitingHiddenAck = false
+    startScaleAnimation(root.targetMagnification)
+  }
+
+  function abortActivation(reason) {
+    if (!root.awaitingProxyFrame && !root.awaitingHiddenAck) return
+    console.warn("wiggle: " + reason + "; restoring native cursor")
+    handoffTimer.stop()
+    root.awaitingProxyFrame = false
+    root.awaitingHiddenAck = false
+    root.awaitingShownAck = true
+    root.showRetryCount = 0
+    requestCursorInvisible(false, "activation failure recovery")
+    root.currentMagnification = 1.0
+    root.targetMagnification = 1.0
+    root.pendingActivation = false
+    root.pendingMagnification = 1.0
+    warmupWaitTimer.stop()
+    deflateTimer.stop()
+    safetyTimer.stop()
+    handoffTimer.restart()
   }
 
   function deflate() {
@@ -253,18 +344,54 @@ Item {
 
   function finishDeactivation() {
     console.log("wiggle: reached 1.0x baseline, restoring native cursor")
+    root.awaitingShownAck = true
+    root.showRetryCount = 0
     requestCursorInvisible(false, "restore native cursor after deflation")
+    handoffTimer.restart()
+  }
+
+  function onCursorShown() {
+    if (!root.awaitingShownAck) return
+    handoffTimer.stop()
+    root.awaitingShownAck = false
+    root.cursorRestoreDegraded = false
     root.proxyActive = false
     root.currentMagnification = 1.0
     root.targetMagnification = 1.0
     deflateTimer.stop()
   }
 
+  function onCursorShowFailed() {
+    if (!root.awaitingShownAck) return
+    if (root.showRetryCount < 1) {
+      root.showRetryCount++
+      console.warn("wiggle: native cursor show was not acknowledged; retrying once")
+      requestCursorInvisible(false, "retry native cursor restore")
+      handoffTimer.restart()
+    } else {
+      console.warn("wiggle: native cursor show was not confirmed; retaining the 1x proxy")
+      handoffTimer.stop()
+      root.awaitingShownAck = false
+      root.cursorRestoreDegraded = true
+      root.proxyActive = true
+      root.currentMagnification = 1.0
+      root.targetMagnification = 1.0
+    }
+  }
+
   function restoreState() {
     deflateTimer.stop()
     safetyTimer.stop()
+    handoffTimer.stop()
     scaleAnimation.stop()
     requestCursorInvisible(false, "force restore native cursor")
+    root.awaitingProxyFrame = false
+    root.awaitingHiddenAck = false
+    root.awaitingShownAck = false
+    root.cursorRestoreDegraded = false
+    root.pendingActivation = false
+    root.pendingMagnification = 1.0
+    root.showRetryCount = 0
     root.proxyActive = false
     root.currentMagnification = 1.0
     root.targetMagnification = 1.0
@@ -296,6 +423,34 @@ Item {
     }
   }
 
+  function registerWarmupWindow() {
+    root.warmupWindowCount++
+    root.renderWarmupComplete = false
+  }
+
+  function completeWarmupWindow() {
+    root.warmupWindowCompleteCount++
+    updateWarmupCompletion()
+  }
+
+  function unregisterWarmupWindow(wasComplete) {
+    root.warmupWindowCount = Math.max(0, root.warmupWindowCount - 1)
+    if (wasComplete) {
+      root.warmupWindowCompleteCount = Math.max(0, root.warmupWindowCompleteCount - 1)
+    }
+    updateWarmupCompletion()
+  }
+
+  function updateWarmupCompletion() {
+    root.renderWarmupComplete = root.warmupWindowCount > 0 &&
+                                root.warmupWindowCompleteCount === root.warmupWindowCount
+    if (root.renderWarmupComplete && root.pendingActivation) {
+      warmupWaitTimer.stop()
+      root.beginActivation(root.pendingMagnification)
+      root.safetyTimer.restart()
+    }
+  }
+
   // ── Overlay Proxy Renderer ───────────────────────────────────────────────
 
   Variants {
@@ -314,16 +469,101 @@ Item {
       anchors { top: true; bottom: true; left: true; right: true }
       mask: Region {}
 
+      property bool surfaceArmed: backingWindowVisible
+      property bool warmupActive: false
+      property bool warmupComplete: false
+      property bool warmupAnimationFinished: false
+      property real warmupMagnification: 1.0
+      property real warmupOffset: 0.0
+
+      Component.onCompleted: {
+        root.registerWarmupWindow()
+        maybeStartWarmup()
+      }
+
+      Component.onDestruction: root.unregisterWarmupWindow(warmupComplete)
+
+      onBackingWindowVisibleChanged: maybeStartWarmup()
+
+      function maybeStartWarmup() {
+        if (warmupComplete || warmupActive || !surfaceArmed ||
+            cursorImageItem.status !== Image.Ready || root.cursorImage === "") {
+          return
+        }
+        warmupMagnification = 1.0
+        warmupOffset = 0.0
+        warmupAnimationFinished = false
+        warmupActive = true
+        renderWarmupAnimation.start()
+      }
+
+      Connections {
+        target: cursorProxyItem.Window.window
+
+        function onFrameSwapped() {
+          if (proxyWindow.warmupActive && proxyWindow.warmupAnimationFinished) {
+            proxyWindow.finishWarmup()
+          }
+          if (root.awaitingProxyFrame && root.proxyActive &&
+              root.cursorX >= proxyWindow.screen.x &&
+              root.cursorX < proxyWindow.screen.x + proxyWindow.screen.width &&
+              root.cursorY >= proxyWindow.screen.y &&
+              root.cursorY < proxyWindow.screen.y + proxyWindow.screen.height) {
+            root.onProxyFramePresented()
+          }
+        }
+      }
+
+      function finishWarmup() {
+        if (!warmupActive) return
+        warmupActive = false
+        warmupComplete = true
+        warmupMagnification = 1.0
+        warmupOffset = 0.0
+        root.completeWarmupWindow()
+      }
+
+      ParallelAnimation {
+        id: renderWarmupAnimation
+
+        NumberAnimation {
+          target: proxyWindow
+          property: "warmupMagnification"
+          from: 1.0
+          to: root.initialMagnification
+          duration: root.animationDurationMs
+          easing.type: Easing.InOutCubic
+        }
+
+        NumberAnimation {
+          target: proxyWindow
+          property: "warmupOffset"
+          from: 0.0
+          to: 32.0
+          duration: root.animationDurationMs
+          easing.type: Easing.InOutCubic
+        }
+
+        onFinished: {
+          proxyWindow.warmupAnimationFinished = true
+          var renderWindow = cursorProxyItem.Window.window
+          if (renderWindow) renderWindow.update()
+        }
+      }
+
       Item {
         id: cursorProxyItem
-        visible: root.proxyActive &&
-                 root.cursorX >= proxyWindow.screen.x &&
-                 root.cursorX < proxyWindow.screen.x + proxyWindow.screen.width &&
-                 root.cursorY >= proxyWindow.screen.y &&
-                 root.cursorY < proxyWindow.screen.y + proxyWindow.screen.height
+        visible: proxyWindow.warmupActive ||
+                 (root.proxyActive &&
+                  root.cursorX >= proxyWindow.screen.x &&
+                  root.cursorX < proxyWindow.screen.x + proxyWindow.screen.width &&
+                  root.cursorY >= proxyWindow.screen.y &&
+                  root.cursorY < proxyWindow.screen.y + proxyWindow.screen.height)
+        opacity: proxyWindow.warmupActive ? 0.002 : 1.0
 
         // Continuous rendered dimensions
-        readonly property real renderedWidth: root.cursorSize * root.currentMagnification
+        readonly property real renderedWidth: root.cursorSize *
+          (proxyWindow.warmupActive ? proxyWindow.warmupMagnification : root.currentMagnification)
         readonly property real renderedHeight: root.cursorImageWidth > 0
           ? (renderedWidth * (root.cursorImageHeight / root.cursorImageWidth))
           : renderedWidth
@@ -338,16 +578,20 @@ Item {
         readonly property real hotY: root.cursorHotspotY * assetScale
 
         // Position top-left so that (hotX, hotY) lands exactly on (cursorX, cursorY)
-        x: root.cursorX - proxyWindow.screen.x - hotX
-        y: root.cursorY - proxyWindow.screen.y - hotY
+        x: proxyWindow.warmupActive
+          ? proxyWindow.warmupOffset : root.cursorX - proxyWindow.screen.x - hotX
+        y: proxyWindow.warmupActive
+          ? proxyWindow.warmupOffset : root.cursorY - proxyWindow.screen.y - hotY
         width: renderedWidth
         height: renderedHeight
 
         Image {
+          id: cursorImageItem
           anchors.fill: parent
           source: root.cursorImage ? "file://" + root.cursorImage : ""
           smooth: true
-          mipmap: true
+          mipmap: false
+          onStatusChanged: proxyWindow.maybeStartWarmup()
         }
       }
     }
@@ -374,8 +618,44 @@ Item {
       }
       if (root.proxyActive || root.targetMagnification > 1.0) {
         console.warn("wiggle: safety timer expired (" + Math.round(elapsed) + "ms since last shake), restoring baseline")
-        root.restoreState()
+        if (root.awaitingProxyFrame || root.awaitingHiddenAck) {
+          root.abortActivation("activation safety timeout")
+        } else if (!root.awaitingShownAck && !root.cursorRestoreDegraded) {
+          scaleAnimation.stop()
+          root.currentMagnification = 1.0
+          root.targetMagnification = 1.0
+          root.finishDeactivation()
+        }
       }
     }
   }
+
+  Timer {
+    id: handoffTimer
+    interval: root.cursorHandoffTimeoutMs
+    repeat: false
+    onTriggered: {
+      if (root.awaitingProxyFrame) {
+        root.abortActivation("1x cursor proxy frame was not presented")
+      } else if (root.awaitingHiddenAck) {
+        root.abortActivation("native cursor hide acknowledgement timed out")
+      } else if (root.awaitingShownAck) {
+        root.onCursorShowFailed()
+      }
+    }
+  }
+
+  Timer {
+    id: warmupWaitTimer
+    interval: 500
+    repeat: false
+    onTriggered: {
+      if (root.pendingActivation) {
+        console.warn("wiggle: discarded an early shake because render warm-up did not complete")
+        root.pendingActivation = false
+        root.pendingMagnification = 1.0
+      }
+    }
+  }
+
 }

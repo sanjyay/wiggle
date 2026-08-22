@@ -95,6 +95,44 @@ run_test "Proxy is click-through and focusless" bash -c "
   grep -q 'wiggle-cursor-proxy' '$PLUGIN_DIR/Wiggle.qml'
 "
 
+run_test "Shake activation carries an atomic position" bash -c "
+  grep -q 'printf(\"SHAKE %d %d' '$PLUGIN_DIR/scripts/wiggle-monitor.c' &&
+  ! grep -Fq 'printf(\"SHAKE\\n\")' '$PLUGIN_DIR/scripts/wiggle-monitor.c' &&
+  grep -q 'line.startsWith(\"SHAKE \"' '$PLUGIN_DIR/Wiggle.qml'
+"
+
+run_test "Cursor handoff waits for compositor acknowledgements" bash -c "
+  grep -q 'HIDDEN' '$PLUGIN_DIR/scripts/wiggle-monitor.c' &&
+  grep -q 'SHOWN' '$PLUGIN_DIR/scripts/wiggle-monitor.c' &&
+  grep -q 'handoff_pending = true' '$PLUGIN_DIR/scripts/wiggle-monitor.c' &&
+  grep -q 'if (handoff_pending) break' '$PLUGIN_DIR/scripts/wiggle-monitor.c' &&
+  grep -q 'onProxyFramePresented' '$PLUGIN_DIR/Wiggle.qml' &&
+  grep -q '1x cursor proxy frame presented' '$PLUGIN_DIR/Wiggle.qml' &&
+  grep -q 'onCursorHidden' '$PLUGIN_DIR/Wiggle.qml' &&
+  grep -q 'cursorHandoffTimeoutMs' '$PLUGIN_DIR/Wiggle.qml'
+"
+
+run_test "Cursor restoration remains visible on acknowledgement failure" bash -c "
+  grep -q 'cursorRestoreDegraded = true' '$PLUGIN_DIR/Wiggle.qml' &&
+  grep -q 'retaining the 1x proxy' '$PLUGIN_DIR/Wiggle.qml' &&
+  grep -q 'compositor_cursor_hidden' '$PLUGIN_DIR/scripts/wiggle-monitor.c' &&
+  grep -q 'restoreState()' '$PLUGIN_DIR/Wiggle.qml' &&
+  awk '/Component.onDestruction:/{seen=1} seen && /restoreState\(\)/{restore=NR} seen && /stopMonitor\(\)/{stop=NR; exit} END{exit !(restore && stop && restore < stop)}' '$PLUGIN_DIR/Wiggle.qml'
+"
+
+run_test "Warm-up state handles monitor removal" bash -c "
+  grep -q 'unregisterWarmupWindow' '$PLUGIN_DIR/Wiggle.qml' &&
+  grep -q 'Component.onDestruction: root.unregisterWarmupWindow' '$PLUGIN_DIR/Wiggle.qml'
+"
+
+run_test "Real proxy render path is prewarmed" bash -c "
+  grep -q 'onFrameSwapped' '$PLUGIN_DIR/Wiggle.qml' &&
+  grep -q 'to: root.initialMagnification' '$PLUGIN_DIR/Wiggle.qml' &&
+  grep -q 'property: \"warmupOffset\"' '$PLUGIN_DIR/Wiggle.qml' &&
+  grep -q 'opacity: proxyWindow.warmupActive ? 0.002' '$PLUGIN_DIR/Wiggle.qml' &&
+  grep -q 'mipmap: false' '$PLUGIN_DIR/Wiggle.qml'
+"
+
 # ── Summary ──
 echo "================="
 echo "Results: $PASS passed, $FAIL failed"
