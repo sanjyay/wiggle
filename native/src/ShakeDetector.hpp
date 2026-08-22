@@ -7,6 +7,9 @@
 #include <hyprland/src/helpers/math/Math.hpp>
 
 class ShakeDetector {
+  // Original MIT implementation informed by KWin's interaction model:
+  // compare recent path length with its bounds and coalesce direction runs.
+  // No KDE source code is incorporated here.
   public:
     using Clock = std::chrono::steady_clock;
 

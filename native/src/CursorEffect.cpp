@@ -39,7 +39,8 @@ bool CursorEffect::trigger(Clock::time_point now) {
         softwareLocked_ = true;
         beginTransition(std::min(settings_.initialScale, settings_.maximumScale), now);
     } else {
-        beginTransition(std::min(targetScale_ + settings_.scaleStep, settings_.maximumScale), now);
+        const auto nextScale = targetScale_ <= 1.0 ? settings_.initialScale : targetScale_ + settings_.scaleStep;
+        beginTransition(std::min(nextScale, settings_.maximumScale), now);
     }
 
     decayAt_ = now + settings_.hold;
@@ -91,7 +92,6 @@ void CursorEffect::restore() {
 
 void CursorEffect::setMaximumScale(double maximumScale) {
     settings_.maximumScale = std::max(maximumScale, 1.0);
-    settings_.initialScale = std::min(settings_.initialScale, settings_.maximumScale);
     if (active_ && targetScale_ > settings_.maximumScale)
         beginTransition(settings_.maximumScale, Clock::now());
 }
