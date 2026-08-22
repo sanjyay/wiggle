@@ -1,0 +1,12 @@
+[repository]
+name = "Wiggle"
+authors = ["sanjyay"]
+
+[wiggle-native]
+description = "Experimental native Hyprland backend for Wiggle"
+authors = ["sanjyay"]
+output = "native/build/wiggle-native.so"
+build = [
+    "cmake -S native -B native/build -DCMAKE_BUILD_TYPE=Release",
+    "cmake --build native/build --config Release --parallel"
+]
