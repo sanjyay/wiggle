@@ -1,0 +1,33 @@
+#!/bin/bash
+# Build wiggle-monitor in its pinned, network-isolated toolchain container.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT_DIR="$(dirname "$SCRIPT_DIR")"
+OUTPUT_DIR="${1:-}"
+IMAGE="wiggle-monitor-builder:debian-bookworm-20260820"
+
+if [[ -z "$OUTPUT_DIR" || ! -d "$OUTPUT_DIR" ]]; then
+  echo "usage: $0 EXISTING_OUTPUT_DIRECTORY" >&2
+  exit 2
+fi
+if ! command -v docker >/dev/null 2>&1; then
+  echo "ERROR: Docker is required for the pinned reproducible build." >&2
+  exit 1
+fi
+
+docker build --pull --platform linux/amd64 \
+  --tag "$IMAGE" \
+  "$ROOT_DIR/build/wiggle-monitor"
+
+docker run --rm --platform linux/amd64 \
+  --user "$(id -u):$(id -g)" \
+  --network none \
+  --read-only \
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --tmpfs /tmp:rw,nosuid,nodev,noexec,size=32m \
+  --mount "type=bind,src=$ROOT_DIR/scripts/wiggle-monitor.c,dst=/src/wiggle-monitor.c,readonly" \
+  --mount "type=bind,src=$(cd "$OUTPUT_DIR" && pwd),dst=/out" \
+  "$IMAGE"

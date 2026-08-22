@@ -1,0 +1,26 @@
+#!/bin/bash
+# Rebuild with the pinned toolchain and compare exact bytes with the bundled ELF.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT_DIR="$(dirname "$SCRIPT_DIR")"
+WORK_DIR="$(mktemp -d)"
+trap 'rm -r -- "$WORK_DIR"' EXIT
+
+echo "source:"
+sha256sum "$SCRIPT_DIR/wiggle-monitor.c"
+echo "expected binary SHA256:"
+sha256sum "$SCRIPT_DIR/wiggle-monitor"
+
+"$SCRIPT_DIR/build-wiggle-monitor" "$WORK_DIR"
+
+echo "rebuilt binary SHA256:"
+sha256sum "$WORK_DIR/wiggle-monitor"
+if cmp --silent "$SCRIPT_DIR/wiggle-monitor" "$WORK_DIR/wiggle-monitor"; then
+  echo "MATCH: rebuilt helper is byte-for-byte identical to scripts/wiggle-monitor"
+else
+  echo "MISMATCH: rebuilt helper differs from scripts/wiggle-monitor" >&2
+  cmp "$SCRIPT_DIR/wiggle-monitor" "$WORK_DIR/wiggle-monitor" || true
+  exit 1
+fi

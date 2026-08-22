@@ -68,7 +68,7 @@ omarchy plugin remove io.github.sanjyay.wiggle
 * **No Network:** Wiggle performs zero network operations, contains no HTTP/socket network libraries, and includes no analytics, telemetry, or remote dependencies.
 * **Filesystem Safety:** Temporary extracted cursor assets are written exclusively to `$XDG_RUNTIME_DIR/wiggle/` with strict `0700` directory and `0600` file permissions.
 * **Untrusted Theme Files:** Xcursor headers, TOCs, offsets, dimensions, hotspots, and pixel payloads are bounds-checked before decoding. Malformed candidates are skipped in favor of a valid fallback when available.
-* **Bundled Helper:** Omarchy installs plugins as plain Git checkouts and does not run build hooks. The x86-64 `scripts/wiggle-monitor` executable is therefore included alongside its complete C source and reproducible build script. It requires no `sudo` or installation-time compilation.
+* **Bundled Helper:** Omarchy installs plugins as plain Git checkouts and does not run build hooks. The x86-64 `scripts/wiggle-monitor` executable is therefore included alongside its complete C source. A digest-pinned Debian builder with a timestamped package snapshot reproduces it exactly, and CI rejects any source/binary mismatch.
 
 ---
 
@@ -92,13 +92,13 @@ omarchy plugin remove io.github.sanjyay.wiggle
 
 ## Helper Executable and Source
 
-The bundled helper is built from `scripts/wiggle-monitor.c` because Omarchy's plugin installer intentionally does not execute build hooks. To rebuild the same optimized, hardened binary locally, install GCC, `pkg-config`, and the libevdev development files, then run:
+The bundled helper is built from `scripts/wiggle-monitor.c` because Omarchy's plugin installer intentionally does not execute build hooks. To independently rebuild it in the pinned toolchain and compare it byte-for-byte with the committed ELF, install Docker and run:
 
 ```bash
-bash scripts/build.sh
+./scripts/verify-wiggle-monitor
 ```
 
-The build uses `-O2`, strict compiler warnings, stack protection, fortified libc checks, and strips unneeded symbols. It does not use debug or sanitizer flags.
+The verifier reports the reviewed source hash, exact compiler/linker/strip and dependency versions, expected and rebuilt binary hashes, and `MATCH` or `MISMATCH`. The builder pins the base image by immutable digest and obtains explicitly versioned packages from Debian Snapshot `20260820T000000Z`. The build uses fixed paths and locale/time settings, omits the linker build ID, strips deterministically, and runs without network access after the builder image is created. `.github/workflows/verify-wiggle-monitor.yml` runs the same comparison for pushes and pull requests.
 
 ---
 
