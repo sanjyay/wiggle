@@ -4,6 +4,12 @@
 
 Wiggle implements the KDE Plasma / KWin Shake Cursor locator effect for Omarchy Quickshell on Hyprland. When you rapidly oscillate your mouse, the pointer smoothly magnifies so you can instantly locate it on multi-monitor setups, ultrawide displays, or busy workspaces.
 
+
+https://github.com/user-attachments/assets/d1133515-9c44-48a9-8b22-29bc225317ae
+
+
+
+
 ---
 
 ## Features
