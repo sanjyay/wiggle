@@ -5,6 +5,7 @@
 #include <hyprland/src/debug/log/Logger.hpp>
 #include <hyprland/src/plugins/PluginAPI.hpp>
 
+#include "CursorEffect.hpp"
 #include "CursorTracker.hpp"
 #include "ShakeDetector.hpp"
 
@@ -14,8 +15,10 @@ constexpr auto PLUGIN_VERSION = "0.1.0-experimental";
 
 HANDLE pluginHandle = nullptr;
 CursorTracker cursorTracker;
+CursorEffect cursorEffect;
 ShakeDetector shakeDetector;
 CHyprSignalListener cursorMoveListener;
+CHyprSignalListener tickListener;
 } // namespace
 
 APICALL EXPORT std::string PLUGIN_API_VERSION() {
@@ -38,8 +41,14 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 
     cursorMoveListener = Event::bus()->m_events.input.mouse.move.listen([](Vector2D position, Event::SCallbackInfo&) {
         cursorTracker.record(position);
-        if (shakeDetector.update(position))
-            Log::logger->log(Log::INFO, "[wiggle-native] shake detected (rendering disabled at checkpoint C)");
+        if (shakeDetector.update(position)) {
+            Log::logger->log(Log::INFO, "[wiggle-native] shake detected");
+            cursorEffect.trigger();
+        }
+    });
+
+    tickListener = Event::bus()->m_events.tick.listen([] {
+        cursorEffect.tick();
     });
 
     Log::logger->log(Log::INFO, "[wiggle-native] loaded version {} (ABI {})", PLUGIN_VERSION, pluginABI);
@@ -48,6 +57,8 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 
 APICALL EXPORT void PLUGIN_EXIT() {
     cursorMoveListener.reset();
+    tickListener.reset();
+    cursorEffect.restore();
 
     Log::logger->log(Log::INFO, "[wiggle-native] unloaded version {}", PLUGIN_VERSION);
     pluginHandle = nullptr;

@@ -6,6 +6,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(HYPRLAND REQUIRED IMPORTED_TARGET hyprland)
 
 add_library(wiggle-native SHARED
+  src/CursorEffect.cpp
   src/CursorTracker.cpp
   src/ShakeDetector.cpp
   src/main.cpp
