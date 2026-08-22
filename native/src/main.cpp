@@ -1,14 +1,19 @@
 #include <stdexcept>
 #include <string>
 
+#include <hyprland/src/event/EventBus.hpp>
 #include <hyprland/src/debug/log/Logger.hpp>
 #include <hyprland/src/plugins/PluginAPI.hpp>
+
+#include "CursorTracker.hpp"
 
 namespace {
 constexpr auto PLUGIN_NAME    = "wiggle-native";
 constexpr auto PLUGIN_VERSION = "0.1.0-experimental";
 
 HANDLE pluginHandle = nullptr;
+CursorTracker cursorTracker;
+CHyprSignalListener cursorMoveListener;
 } // namespace
 
 APICALL EXPORT std::string PLUGIN_API_VERSION() {
@@ -29,12 +34,17 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         throw std::runtime_error("wiggle-native: Hyprland ABI mismatch");
     }
 
+    cursorMoveListener = Event::bus()->m_events.input.mouse.move.listen([](Vector2D position, Event::SCallbackInfo&) {
+        cursorTracker.record(position);
+    });
+
     Log::logger->log(Log::INFO, "[wiggle-native] loaded version {} (ABI {})", PLUGIN_VERSION, pluginABI);
     return {PLUGIN_NAME, "Experimental native cursor wiggle backend", "sanjyay", PLUGIN_VERSION};
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {
+    cursorMoveListener.reset();
+
     Log::logger->log(Log::INFO, "[wiggle-native] unloaded version {}", PLUGIN_VERSION);
     pluginHandle = nullptr;
 }
-
