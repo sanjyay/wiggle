@@ -1,7 +1,12 @@
 #include "CursorTracker.hpp"
 
-#include <cassert>
 #include <chrono>
+
+namespace {
+bool require(bool condition) {
+    return condition;
+}
+} // namespace
 
 int main() {
     CursorTracker tracker;
@@ -13,9 +18,9 @@ int main() {
             start + std::chrono::milliseconds{index});
     }
 
-    assert(tracker.size() == CursorTracker::CAPACITY);
-    assert(tracker.totalSamples() == CursorTracker::CAPACITY + 44);
-    assert(tracker.latest() != nullptr);
-    assert(tracker.latest()->position == Vector2D{299.0, 598.0});
-}
+    if (!require(tracker.size() == CursorTracker::CAPACITY) || !require(tracker.totalSamples() == CursorTracker::CAPACITY + 44) ||
+        !require(tracker.latest() != nullptr) || !require(tracker.latest()->position == Vector2D{299.0, 598.0}))
+        return 1;
 
+    return 0;
+}

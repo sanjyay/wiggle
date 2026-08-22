@@ -7,6 +7,7 @@ pkg_check_modules(HYPRLAND REQUIRED IMPORTED_TARGET hyprland)
 
 add_library(wiggle-native SHARED
   src/CursorTracker.cpp
+  src/ShakeDetector.cpp
   src/main.cpp
 )
 set_target_properties(wiggle-native PROPERTIES
@@ -41,4 +42,20 @@ if(BUILD_TESTING)
   target_include_directories(cursor-tracker-test PRIVATE src)
   target_link_libraries(cursor-tracker-test PRIVATE PkgConfig::HYPRLAND)
   add_test(NAME cursor-tracker-bounded-history COMMAND cursor-tracker-test)
+
+  add_executable(shake-detector-test
+    tests/ShakeDetectorTest.cpp
+    src/ShakeDetector.cpp
+  )
+  target_compile_features(shake-detector-test PRIVATE cxx_std_23)
+  target_compile_options(shake-detector-test PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+    -Wconversion
+    -Wsign-conversion
+  )
+  target_include_directories(shake-detector-test PRIVATE src)
+  target_link_libraries(shake-detector-test PRIVATE PkgConfig::HYPRLAND)
+  add_test(NAME shake-detector-behavior COMMAND shake-detector-test)
 endif()

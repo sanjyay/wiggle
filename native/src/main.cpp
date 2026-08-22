@@ -6,6 +6,7 @@
 #include <hyprland/src/plugins/PluginAPI.hpp>
 
 #include "CursorTracker.hpp"
+#include "ShakeDetector.hpp"
 
 namespace {
 constexpr auto PLUGIN_NAME    = "wiggle-native";
@@ -13,6 +14,7 @@ constexpr auto PLUGIN_VERSION = "0.1.0-experimental";
 
 HANDLE pluginHandle = nullptr;
 CursorTracker cursorTracker;
+ShakeDetector shakeDetector;
 CHyprSignalListener cursorMoveListener;
 } // namespace
 
@@ -36,6 +38,8 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 
     cursorMoveListener = Event::bus()->m_events.input.mouse.move.listen([](Vector2D position, Event::SCallbackInfo&) {
         cursorTracker.record(position);
+        if (shakeDetector.update(position))
+            Log::logger->log(Log::INFO, "[wiggle-native] shake detected (rendering disabled at checkpoint C)");
     });
 
     Log::logger->log(Log::INFO, "[wiggle-native] loaded version {} (ABI {})", PLUGIN_VERSION, pluginABI);

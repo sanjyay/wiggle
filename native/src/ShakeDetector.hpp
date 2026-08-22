@@ -1,0 +1,40 @@
+#pragma once
+
+#include <chrono>
+#include <cstddef>
+#include <deque>
+
+#include <hyprland/src/helpers/math/Math.hpp>
+
+class ShakeDetector {
+  public:
+    using Clock = std::chrono::steady_clock;
+
+    struct Settings {
+        std::chrono::milliseconds historyWindow{1000};
+        double                    sensitivity      = 4.0;
+        double                    minimumTravel   = 40.0;
+        double                    noiseThreshold  = 2.0;
+        std::size_t               maximumSamples  = 256;
+    };
+
+    ShakeDetector();
+    explicit ShakeDetector(Settings settings);
+
+    bool update(Vector2D position, Clock::time_point timestamp = Clock::now());
+    void reset();
+
+    [[nodiscard]] std::size_t retainedSamples() const;
+
+  private:
+    struct Sample {
+        Vector2D          position;
+        Clock::time_point timestamp;
+    };
+
+    [[nodiscard]] static bool sameDirection(double previous, double current);
+
+    Settings           settings_;
+    std::deque<Sample> history_;
+};
+
