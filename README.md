@@ -15,7 +15,7 @@ Wiggle implements the KDE Plasma / KWin Shake Cursor locator effect for Omarchy 
 * **Universal Single Proxy Overlay:** Renders identically across applications (terminals, browsers), empty workspaces, and desktop backgrounds on a click-through, focusless overlay (`WlrLayer.Overlay`).
 * **Hotspot-Anchored Precision:** Scales precisely around the cursor hotspot with zero pointer tip drift across all magnification levels.
 * **Theme-Agnostic Asset Discovery:** Automatically discovers the active theme and extracts the highest-resolution arrow/default cursor asset (XCursor bitmaps up to 96px+ or Hyprcursor SVGs).
-* **Robust Fail-Safe:** Kernel parent-death notifications (`PR_SET_PDEATHSIG`) and signal handlers guarantee compositor cursor visibility is restored even if Quickshell or the helper terminates unexpectedly.
+* **Defensive Cursor Handoff:** The proxy is presented at 1x before the native cursor is hidden, and HIDE/SHOW operations require compositor acknowledgements. Normal termination and handled failure paths request native-cursor restoration; an unconfirmed SHOW keeps the proxy available as a fallback.
 
 ---
 
@@ -33,6 +33,17 @@ To reload the shell immediately:
 omarchy restart shell
 ```
 
+Wiggle has no user-facing settings. Its shake sensitivity, magnification, and timing follow the plugin's built-in behavior.
+
+## Enable or Disable
+
+```bash
+omarchy plugin enable io.github.sanjyay.wiggle
+omarchy plugin disable io.github.sanjyay.wiggle
+```
+
+Disabling Wiggle stops its helper and restores the native cursor through the normal shutdown path.
+
 ---
 
 ## Removal
@@ -47,9 +58,10 @@ omarchy plugin remove io.github.sanjyay.wiggle
 
 * **Permissions & Device Access:** The bundled `wiggle-monitor` helper opens pointer devices in `/dev/input/event*` using `libevdev`. Stock Omarchy Quattro automatically provisions desktop users into the `input` group during system installation and user creation (`install/hardware/input-group.sh` and `bin/omarchy-provision-owner`), granting required read permissions without requiring `sudo`, custom udev rules, or privileged setup.
 * **Input Minimization:** The monitor opens only pointer devices with relative axes (`REL_X`, `REL_Y`). Keyboards, touchscreens, and touchpads are explicitly rejected. All `EV_KEY` and button events are discarded. The monitor never injects input and never uses `EVIOCGRAB`.
-* **Privacy & Memory Safety:** Cursor coordinates are queried over local Hyprland IPC sockets only while magnification is active. Coordinates exist solely in volatile memory and are never persisted to disk, logged in production, or sent over any network.
+* **Privacy & Memory Safety:** Cursor coordinates are queried over local Hyprland IPC when a shake is detected and while the proxy may need to track the pointer. Coordinates exist solely in volatile memory and are never persisted to disk, logged in production, or sent over any network.
 * **No Network:** Wiggle performs zero network operations, contains no HTTP/socket network libraries, and includes no analytics, telemetry, or remote dependencies.
 * **Filesystem Safety:** Temporary extracted cursor assets are written exclusively to `$XDG_RUNTIME_DIR/wiggle/` with strict `0700` directory and `0600` file permissions.
+* **Bundled Helper:** Omarchy installs plugins as plain Git checkouts and does not run build hooks. The x86-64 `scripts/wiggle-monitor` executable is therefore included alongside its complete C source and reproducible build script. It requires no `sudo` or installation-time compilation.
 
 ---
 
@@ -67,16 +79,29 @@ omarchy plugin remove io.github.sanjyay.wiggle
 * **Hyprland** (0.50+)
 * **libevdev** (standard on Arch Linux / Omarchy)
 * **Python 3** (standard system Python for high-res asset discovery)
+* Read access to relative pointer devices under `/dev/input` (stock Omarchy user provisioning supplies this through the `input` group)
 
 ---
 
-## Building from Source
+## Helper Executable and Source
 
-The helper binary is pre-built and bundled. To rebuild it locally:
+The bundled helper is built from `scripts/wiggle-monitor.c` because Omarchy's plugin installer intentionally does not execute build hooks. To rebuild the same optimized, hardened binary locally, install GCC, `pkg-config`, and the libevdev development files, then run:
 
 ```bash
 bash scripts/build.sh
 ```
+
+The build uses `-O2`, strict compiler warnings, stack protection, fortified libc checks, and strips unneeded symbols. It does not use debug or sanitizer flags.
+
+---
+
+## Troubleshooting
+
+* Confirm discovery and enabled state with `omarchy plugin list`.
+* If no shake is detected, confirm your user can read the relevant `/dev/input/event*` pointer device and log out/in after any group-membership change.
+* If the cursor theme cannot be resolved, Wiggle remains in native-cursor mode; check `HYPRCURSOR_THEME`, `XCURSOR_THEME`, and the corresponding size variables.
+* Reload after configuration or plugin updates with `omarchy restart shell`.
+* Omarchy plugins share Quickshell's GUI thread. A plugin performing long synchronous QML or JavaScript work can temporarily stall shell animations, including Wiggle.
 
 ---
 

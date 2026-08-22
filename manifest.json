@@ -1,14 +1,14 @@
 {
-    "schemaVersion": 1,
-    "id": "io.github.sanjyay.wiggle",
-    "name": "Wiggle",
-    "version": "1.0.0",
-    "author": "sanjyay",
-    "license": "MIT",
-    "description": "Shake your mouse to find your cursor.",
-    "kinds": ["service"],
-    "entryPoints": {
-        "service": "Wiggle.qml"
-    },
-    "keepLoaded": true
+  "schemaVersion": 1,
+  "id": "io.github.sanjyay.wiggle",
+  "name": "Wiggle",
+  "version": "1.1.0",
+  "author": "sanjyay",
+  "license": "MIT",
+  "description": "Shake your mouse to find your cursor.",
+  "kinds": ["service"],
+  "entryPoints": {
+    "service": "Wiggle.qml"
+  },
+  "keepLoaded": true
 }
