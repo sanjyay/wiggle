@@ -325,13 +325,12 @@ static int add_device(const char *path, DeviceState *devices, struct pollfd *pfd
     int is_touchpad = libevdev_has_event_code(dev, EV_ABS, ABS_MT_POSITION_X);
     int is_direct = libevdev_has_property(dev, INPUT_PROP_DIRECT);
 
-    // Reject keyboards (devices with alphanumeric text keys)
-    int has_keyboard_keys = libevdev_has_event_code(dev, EV_KEY, KEY_A) ||
-                           libevdev_has_event_code(dev, EV_KEY, KEY_SPACE) ||
-                           libevdev_has_event_code(dev, EV_KEY, KEY_B) ||
-                           libevdev_has_event_code(dev, EV_KEY, KEY_Z);
+    // Real keyboards never expose relative pointer axes, so has_rel above
+    // already excludes them. Multi-function mice with remappable/gesture
+    // buttons (e.g. Logitech MX Master) declare a full alphanumeric EV_KEY
+    // range too, so a separate keyboard-key check produced false negatives.
 
-    if (!has_rel || is_touchpad || is_direct || has_keyboard_keys) {
+    if (!has_rel || is_touchpad || is_direct) {
         libevdev_free(dev);
         close(fd);
         return 0;
