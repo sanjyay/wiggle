@@ -127,11 +127,18 @@ run_test "Warm-up state handles monitor removal" bash -c "
 "
 
 run_test "Real proxy render path is prewarmed" bash -c "
-  grep -q 'onFrameSwapped' '$PLUGIN_DIR/Wiggle.qml' &&
+  grep -q 'updatesEnabled = false' '$PLUGIN_DIR/Wiggle.qml' &&
+  grep -q 'warmupPresentationTimer.restart()' '$PLUGIN_DIR/Wiggle.qml' &&
+  grep -q 'proxyPresentationTimer.restart()' '$PLUGIN_DIR/Wiggle.qml' &&
   grep -q 'to: root.initialMagnification' '$PLUGIN_DIR/Wiggle.qml' &&
   grep -q 'property: \"warmupOffset\"' '$PLUGIN_DIR/Wiggle.qml' &&
   grep -q 'opacity: proxyWindow.warmupActive ? 0.002' '$PLUGIN_DIR/Wiggle.qml' &&
   grep -q 'mipmap: false' '$PLUGIN_DIR/Wiggle.qml'
+"
+
+run_test "Render handoff uses supported QsWindow API" bash -c "
+  ! grep -q 'onFrameSwapped' '$PLUGIN_DIR/Wiggle.qml' &&
+  ! grep -q '\\.update()' '$PLUGIN_DIR/Wiggle.qml'
 "
 
 # ── Summary ──

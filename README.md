@@ -17,7 +17,7 @@ https://github.com/user-attachments/assets/d1133515-9c44-48a9-8b22-29bc225317ae
 * **KDE Kinematic Shake Detection:** Evaluates relative movement over a rolling 1000ms window with vector coalescing and sensitivity thresholding ($sensitivity = 4.0$).
 * **Continuous Fluid Magnification:** Normal cursor ($1.0\times$) $\to$ smooth $3.0\times$ on first shake detection $\to$ $+1.0\times$ for each subsequent shake detection ($3\times \to 4\times \to 5\times \to 6\times \to 7\times \dots$).
 * **200ms InOutCubic Animation:** Smooth cubic transitions with seamless mid-flight rebasing between target magnifications without visual pops.
-* **2000ms Deflate Timer:** After 2 seconds of stillness, smoothly animates back to $1.0\times$ over 200ms and restores the native cursor.
+* **900ms Deflate Timer:** After 0.9 seconds of stillness, smoothly animates back to $1.0\times$ over 200ms and restores the native cursor.
 * **Universal Single Proxy Overlay:** Renders identically across applications (terminals, browsers), empty workspaces, and desktop backgrounds on a click-through, focusless overlay (`WlrLayer.Overlay`).
 * **Hotspot-Anchored Precision:** Scales precisely around the cursor hotspot with zero pointer tip drift across all magnification levels.
 * **Theme-Agnostic Asset Discovery:** Automatically discovers the active theme and extracts the highest-resolution arrow/default cursor asset (XCursor bitmaps up to 96px+ or Hyprcursor SVGs).

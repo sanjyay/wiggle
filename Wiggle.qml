@@ -8,7 +8,7 @@
 //   3. High-resolution cursor theme asset extraction for sharp scaling.
 //   4. Hotspot-anchored scaling around the exact pointer hotspot (zero tip displacement / wobble).
 //   5. 200ms InOutCubic smooth re-basing animation between current and target magnification.
-//   6. 2000ms deflate timer with seamless shrink back to 1x and safe native cursor restoration.
+//   6. 900ms deflate timer with seamless shrink back to 1x and safe native cursor restoration.
 //
 // MIT License
 
@@ -28,9 +28,10 @@ Item {
   readonly property real initialMagnification: 3.0
   readonly property real overMagnification: 1.0
   readonly property int animationDurationMs: 200
-  readonly property int deflateTimeoutMs: 2000
+  readonly property int deflateTimeoutMs: 900
   readonly property int failsafeTimeoutMs: 5000
   readonly property int cursorHandoffTimeoutMs: 350
+  readonly property int renderGraceMs: 50
 
   // ── Universal Theme & Asset State ───────────────────────────────────────
   property string cursorTheme: ""
@@ -289,6 +290,10 @@ Item {
     root.proxyActive = true
     root.cursorRestoreDegraded = false
     root.awaitingProxyFrame = true
+    // QsWindow deliberately does not expose QQuickWindow::frameSwapped.
+    // Changing proxyActive schedules the proxy render; allow several refresh
+    // intervals before asking the compositor to hide the native cursor.
+    proxyPresentationTimer.restart()
     handoffTimer.restart()
   }
 
@@ -383,6 +388,7 @@ Item {
     deflateTimer.stop()
     safetyTimer.stop()
     handoffTimer.stop()
+    proxyPresentationTimer.stop()
     scaleAnimation.stop()
     requestCursorInvisible(false, "force restore native cursor")
     root.awaitingProxyFrame = false
@@ -413,6 +419,13 @@ Item {
         }
       }
     }
+  }
+
+  Timer {
+    id: proxyPresentationTimer
+    interval: root.renderGraceMs
+    repeat: false
+    onTriggered: root.onProxyFramePresented()
   }
 
   // ── Compositor Cursor Visibility ────────────────────────────────────────
@@ -497,23 +510,6 @@ Item {
         renderWarmupAnimation.start()
       }
 
-      Connections {
-        target: cursorProxyItem.Window.window
-
-        function onFrameSwapped() {
-          if (proxyWindow.warmupActive && proxyWindow.warmupAnimationFinished) {
-            proxyWindow.finishWarmup()
-          }
-          if (root.awaitingProxyFrame && root.proxyActive &&
-              root.cursorX >= proxyWindow.screen.x &&
-              root.cursorX < proxyWindow.screen.x + proxyWindow.screen.width &&
-              root.cursorY >= proxyWindow.screen.y &&
-              root.cursorY < proxyWindow.screen.y + proxyWindow.screen.height) {
-            root.onProxyFramePresented()
-          }
-        }
-      }
-
       function finishWarmup() {
         if (!warmupActive) return
         warmupActive = false
@@ -546,8 +542,23 @@ Item {
 
         onFinished: {
           proxyWindow.warmupAnimationFinished = true
-          var renderWindow = cursorProxyItem.Window.window
-          if (renderWindow) renderWindow.update()
+          // Toggling the supported QsWindow property forces a redraw in
+          // Quickshell 0.3.1. The grace timer then lets that redraw reach the
+          // compositor before this surface is declared warm.
+          proxyWindow.updatesEnabled = false
+          proxyWindow.updatesEnabled = true
+          warmupPresentationTimer.restart()
+        }
+      }
+
+      Timer {
+        id: warmupPresentationTimer
+        interval: root.renderGraceMs
+        repeat: false
+        onTriggered: {
+          if (proxyWindow.warmupActive && proxyWindow.warmupAnimationFinished) {
+            proxyWindow.finishWarmup()
+          }
         }
       }
 
@@ -597,7 +608,7 @@ Item {
     }
   }
 
-  // ── Deflate Timer (2000ms with reset on new shake) ───────────────────────
+  // ── Deflate Timer (900ms with reset on new shake) ────────────────────────
   Timer {
     id: deflateTimer
     interval: root.deflateTimeoutMs
