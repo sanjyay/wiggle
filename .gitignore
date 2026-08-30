@@ -1,3 +1,8 @@
 __pycache__/
 *.pyc
 tests/test-shake-detector
+native/build/
+build/
+*.o
+*.so
+
