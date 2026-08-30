@@ -34,6 +34,8 @@ import subprocess
 import tempfile
 import zlib
 import binascii
+import zipfile
+
 
 SEARCH_PATHS = [
     os.path.expanduser("~/.local/share/icons"),
@@ -380,6 +382,29 @@ def export_xcursor_image(theme_dir, wanted_size):
         return output, hot_x, hot_y, width, height
     return "", 0, 0, 0, 0
 
+def _write_extracted_asset(data_bytes, suffix):
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime or not os.path.isdir(runtime):
+        return ""
+    wiggle_dir = os.path.join(runtime, "wiggle")
+    os.makedirs(wiggle_dir, mode=0o700, exist_ok=True)
+    try:
+        os.chmod(wiggle_dir, 0o700)
+    except OSError:
+        pass
+    output = os.path.join(wiggle_dir, f"wiggle-cursor{suffix}")
+    tmp_fd, tmp_path = tempfile.mkstemp(prefix="cur_", suffix=".tmp", dir=wiggle_dir)
+    try:
+        os.write(tmp_fd, data_bytes)
+        os.close(tmp_fd)
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, output)
+        return output
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        return ""
+
 def find_hyprcursor_shape(theme_dir):
     manifest_candidates = [
         os.path.join(theme_dir, "manifest.hl"),
@@ -408,7 +433,7 @@ def find_hyprcursor_shape(theme_dir):
 
     shape_file = None
     for cand_name in ["default", "left_ptr", "arrow"]:
-        for ext in [".hl", ".meta", ""]:
+        for ext in [".hlc", ".hl", ".meta", ""]:
             p = os.path.join(shapes_dir, cand_name + ext)
             if os.path.isfile(p):
                 shape_file = p
@@ -417,51 +442,118 @@ def find_hyprcursor_shape(theme_dir):
             break
 
     if not shape_file:
-        files = [f for f in os.listdir(shapes_dir) if f.endswith(".hl") or f.endswith(".meta")]
+        files = [f for f in os.listdir(shapes_dir) if f.endswith(".hlc") or f.endswith(".hl") or f.endswith(".meta")]
         if files:
             shape_file = os.path.join(shapes_dir, sorted(files)[0])
 
     return shapes_dir, shape_file
+
+def _parse_hyprcursor_lines(lines, shapes_dir, shape_file):
+    resize_algo = "none"
+    has_svg = False
+    discrete_sizes = set()
+    best_size = 0
+    best_target = None
+    best_hx = 0.0
+    best_hy = 0.0
+    global_hx = None
+    global_hy = None
+
+    for line in lines:
+        line = line.strip()
+        if line.startswith("#") or not line:
+            continue
+        if "resize_algorithm" in line and "=" in line:
+            parts = line.split("=", 1)
+            resize_algo = parts[1].strip().lower()
+        elif "hotspot_x" in line and "=" in line:
+            parts = line.split("=", 1)
+            val = parts[1].strip()
+            if val.replace(".", "", 1).replace("-", "", 1).isdigit():
+                global_hx = float(val)
+        elif "hotspot_y" in line and "=" in line:
+            parts = line.split("=", 1)
+            val = parts[1].strip()
+            if val.replace(".", "", 1).replace("-", "", 1).isdigit():
+                global_hy = float(val)
+        elif "define_size" in line and "=" in line:
+            parts = line.split("=", 1)
+            args = [a.strip() for a in parts[1].split(",")]
+            if len(args) >= 2:
+                sz = int(args[0]) if args[0].isdigit() else 0
+                target = args[1]
+                # Per Hyprcursor spec, 3rd arg is delay (or in some legacy formats hx, hy)
+                hx = float(args[2]) if len(args) >= 4 and args[2].replace(".", "", 1).isdigit() else 0.0
+                hy = float(args[3]) if len(args) >= 4 and args[3].replace(".", "", 1).isdigit() else 0.0
+
+                if target.lower().endswith(".svg") or sz == 0:
+                    has_svg = True
+                    if not best_target or best_target.lower().endswith(".svg"):
+                        best_size = sz if sz > 0 else 256
+                        best_target = target
+                        best_hx = hx
+                        best_hy = hy
+                elif sz > 0:
+                    discrete_sizes.add(sz)
+                    if sz > best_size:
+                        best_size = sz
+                        best_target = target
+                        best_hx = hx
+                        best_hy = hy
+
+    if best_target and (global_hx is not None or global_hy is not None):
+        best_hx = (global_hx or 0.0) * (best_size or 24)
+        best_hy = (global_hy or 0.0) * (best_size or 24)
+
+    return resize_algo, has_svg, discrete_sizes, best_size, best_target, best_hx, best_hy
 
 def export_hyprcursor_image(theme_dir):
     shapes_dir, shape_file = find_hyprcursor_shape(theme_dir)
     if not shape_file:
         return "", 0, 0, 0, 0
 
-    best_size = 0
-    best_file = None
-    best_hx = 0
-    best_hy = 0
+    lines = []
+    is_hlc = shape_file.endswith(".hlc") or zipfile.is_zipfile(shape_file)
 
-    try:
-        with open(shape_file, "r", encoding="utf-8", errors="ignore") as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith("#") or not line:
-                    continue
-                if "define_size" in line and "=" in line:
-                    parts = line.split("=", 1)
-                    args = [a.strip() for a in parts[1].split(",")]
-                    if len(args) >= 4:
-                        sz = int(args[0]) if args[0].isdigit() else 0
-                        target = args[1]
-                        hx = float(args[2]) if args[2].replace(".", "", 1).isdigit() else 0.0
-                        hy = float(args[3]) if args[3].replace(".", "", 1).isdigit() else 0.0
+    if is_hlc:
+        try:
+            with zipfile.ZipFile(shape_file, "r") as zf:
+                if "meta.hl" in zf.namelist():
+                    lines = zf.read("meta.hl").decode("utf-8", "ignore").splitlines()
+        except Exception:
+            return "", 0, 0, 0, 0
+    else:
+        try:
+            with open(shape_file, "r", encoding="utf-8", errors="ignore") as f:
+                lines = f.readlines()
+        except Exception:
+            return "", 0, 0, 0, 0
 
-                        file_path = os.path.join(shapes_dir, target)
-                        if os.path.isfile(file_path):
-                            if target.lower().endswith(".svg"):
-                                return file_path, int(round(hx)), int(round(hy)), 256, 256
-                            elif sz > best_size:
-                                best_size = sz
-                                best_file = file_path
-                                best_hx = int(round(hx))
-                                best_hy = int(round(hy))
-    except Exception:
-        pass
+    algo, has_svg, disc, best_size, best_target, best_hx, best_hy = _parse_hyprcursor_lines(
+        lines, shapes_dir, shape_file
+    )
 
-    if best_file:
-        return best_file, best_hx, best_hy, best_size, best_size
+    if not best_target:
+        return "", 0, 0, 0, 0
+
+    if is_hlc:
+        try:
+            with zipfile.ZipFile(shape_file, "r") as zf:
+                if best_target in zf.namelist():
+                    data = zf.read(best_target)
+                    ext = os.path.splitext(best_target)[1]
+                    out_path = _write_extracted_asset(data, ext)
+                    if out_path:
+                        img_size = best_size if best_size > 0 else 256
+                        return out_path, int(round(best_hx)), int(round(best_hy)), img_size, img_size
+        except Exception:
+            pass
+        return "", 0, 0, 0, 0
+    else:
+        file_path = os.path.join(shapes_dir, best_target)
+        if os.path.isfile(file_path):
+            img_size = best_size if best_size > 0 else 256
+            return file_path, int(round(best_hx)), int(round(best_hy)), img_size, img_size
 
     return "", 0, 0, 0, 0
 
@@ -470,31 +562,26 @@ def probe_hyprcursor(theme_dir):
     if not shape_file:
         return None, "none", []
 
-    resize_algo = "none"
-    has_svg = False
-    discrete_sizes = set()
+    lines = []
+    is_hlc = shape_file.endswith(".hlc") or zipfile.is_zipfile(shape_file)
 
-    try:
-        with open(shape_file, "r", encoding="utf-8", errors="ignore") as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith("#") or not line:
-                    continue
-                if "resize_algorithm" in line and "=" in line:
-                    parts = line.split("=", 1)
-                    resize_algo = parts[1].strip().lower()
-                elif "define_size" in line and "=" in line:
-                    parts = line.split("=", 1)
-                    args = [a.strip() for a in parts[1].split(",")]
-                    if len(args) >= 2:
-                        sz = int(args[0]) if args[0].isdigit() else 0
-                        target = args[1].lower()
-                        if sz == 0 or target.endswith(".svg"):
-                            has_svg = True
-                        elif sz > 0:
-                            discrete_sizes.add(sz)
-    except Exception:
-        return "hyprcursor_unknown", "none", []
+    if is_hlc:
+        try:
+            with zipfile.ZipFile(shape_file, "r") as zf:
+                if "meta.hl" in zf.namelist():
+                    lines = zf.read("meta.hl").decode("utf-8", "ignore").splitlines()
+        except Exception:
+            return "hyprcursor_unknown", "none", []
+    else:
+        try:
+            with open(shape_file, "r", encoding="utf-8", errors="ignore") as f:
+                lines = f.readlines()
+        except Exception:
+            return "hyprcursor_unknown", "none", []
+
+    resize_algo, has_svg, discrete_sizes, _, _, _, _ = _parse_hyprcursor_lines(
+        lines, shapes_dir, shape_file
+    )
 
     if has_svg or resize_algo in ("bilinear", "nearest"):
         return "hyprcursor_scalable", "scalable", sorted(list(discrete_sizes))
@@ -502,6 +589,7 @@ def probe_hyprcursor(theme_dir):
         return "hyprcursor_discrete", "discrete", sorted(list(discrete_sizes))
     else:
         return "hyprcursor_unknown", "none", []
+
 
 def main():
     theme_name, theme_src = get_active_theme()

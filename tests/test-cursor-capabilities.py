@@ -110,7 +110,41 @@ def main():
         test("Hyprcursor Discrete PNG: extracts highest defined size asset (96px)",
              backend == "hyprcursor_discrete" and cap == "discrete" and w == 96 and hx == 12 and hy == 4)
 
-    # 4. Unknown / Corrupted Theme
+    # 4. Hyprcursor Discrete .hlc Archive Fixture
+    import zipfile
+    with tempfile.TemporaryDirectory() as tmp:
+        t_hlc = os.path.join(tmp, "HyprHlcDiscrete")
+        os.makedirs(os.path.join(t_hlc, "hyprcursors"))
+        with open(os.path.join(t_hlc, "manifest.hl"), "w") as f:
+            f.write("cursors_directory = hyprcursors\n")
+        hlc_path = os.path.join(t_hlc, "hyprcursors", "left_ptr.hlc")
+        with zipfile.ZipFile(hlc_path, "w") as zf:
+            zf.writestr("meta.hl", "resize_algorithm = none\nhotspot_x = 0.25\nhotspot_y = 0.25\ndefine_size = 24, ptr24.png, 20\ndefine_size = 128, ptr128.png, 20\n")
+            zf.writestr("ptr24.png", "dummy24")
+            zf.writestr("ptr128.png", "dummy128")
+
+        backend, cap, sizes = probe_hyprcursor(t_hlc)
+        path, hx, hy, w, h = export_hyprcursor_image(t_hlc)
+        test("Hyprcursor .hlc Archive: extracts highest discrete asset (128px) and computes hotspot",
+             backend == "hyprcursor_discrete" and cap == "discrete" and sizes == [24, 128] and w == 128 and h == 128 and hx == 32 and hy == 32 and os.path.isfile(path))
+
+    # 5. Hyprcursor SVG .hlc Archive Fixture
+    with tempfile.TemporaryDirectory() as tmp:
+        t_hlc_svg = os.path.join(tmp, "HyprHlcSvg")
+        os.makedirs(os.path.join(t_hlc_svg, "hyprcursors"))
+        with open(os.path.join(t_hlc_svg, "manifest.hl"), "w") as f:
+            f.write("cursors_directory = hyprcursors\n")
+        hlc_svg_path = os.path.join(t_hlc_svg, "hyprcursors", "default.hlc")
+        with zipfile.ZipFile(hlc_svg_path, "w") as zf:
+            zf.writestr("meta.hl", "hotspot_x = 0.1\nhotspot_y = 0.2\ndefine_size = 0, default.svg\n")
+            zf.writestr("default.svg", "<svg></svg>")
+
+        backend, cap, sizes = probe_hyprcursor(t_hlc_svg)
+        path, hx, hy, w, h = export_hyprcursor_image(t_hlc_svg)
+        test("Hyprcursor SVG .hlc Archive: detected as scalable, extracts SVG asset and computes hotspot",
+             backend == "hyprcursor_scalable" and cap == "scalable" and path.endswith(".svg") and w == 256 and h == 256 and hx == 26 and hy == 51 and os.path.isfile(path))
+
+    # 6. Unknown / Corrupted Theme
     with tempfile.TemporaryDirectory() as tmp:
         t_broken = os.path.join(tmp, "BrokenTheme")
         os.makedirs(t_broken)
