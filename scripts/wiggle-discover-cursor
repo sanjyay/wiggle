@@ -190,18 +190,108 @@ def iter_xcursor_files(theme_dir):
         except OSError:
             continue
 
+def find_theme_dir(theme_name):
+    if not theme_name or "/" in theme_name or theme_name.startswith("."):
+        return None
+    for base in SEARCH_PATHS:
+        cand = os.path.join(base, theme_name)
+        if os.path.isdir(cand):
+            return cand
+    return None
+
+def is_valid_cursor_theme_dir(theme_dir):
+    if not theme_dir or not os.path.isdir(theme_dir):
+        return False
+    # Check Hyprcursor
+    try:
+        h_backend, _, _ = probe_hyprcursor(theme_dir)
+        if h_backend:
+            return True
+    except Exception:
+        pass
+    # Check XCursor
+    try:
+        x_sizes = probe_xcursor(theme_dir)
+        if x_sizes:
+            return True
+    except Exception:
+        pass
+    return False
+
+def _get_systemd_user_env():
+    env_map = {}
+    try:
+        res = subprocess.run(
+            ["systemctl", "--user", "show-environment"],
+            capture_output=True, text=True, timeout=1
+        )
+        if res.returncode == 0:
+            for line in res.stdout.splitlines():
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    env_map[k.strip()] = v.strip().strip("'\"")
+    except Exception:
+        pass
+    return env_map
+
+def _get_uwsm_env():
+    env_map = {}
+    config_home = os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
+    for d in [os.path.join(config_home, "uwsm", "env-hyprland.d"), os.path.join(config_home, "uwsm", "env.d")]:
+        if os.path.isdir(d):
+            try:
+                for fname in sorted(os.listdir(d)):
+                    fpath = os.path.join(d, fname)
+                    if os.path.isfile(fpath):
+                        with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+                            for line in f:
+                                line = line.strip()
+                                if line.startswith("export "):
+                                    line = line[7:].strip()
+                                if "=" in line and not line.startswith("#"):
+                                    k, v = line.split("=", 1)
+                                    env_map[k.strip()] = v.strip().strip("'\"")
+            except Exception:
+                pass
+    return env_map
+
 def get_active_theme():
-    # 1. Check HYPRCURSOR_THEME
+    systemd_env = _get_systemd_user_env()
+    uwsm_env = _get_uwsm_env()
+
+    candidates = []
+
+    # 1. HYPRCURSOR_THEME from systemd / live user session
+    val = systemd_env.get("HYPRCURSOR_THEME", "").strip()
+    if val:
+        candidates.append((val, "systemd:HYPRCURSOR_THEME"))
+
+    # 2. HYPRCURSOR_THEME from uwsm config
+    val = uwsm_env.get("HYPRCURSOR_THEME", "").strip()
+    if val:
+        candidates.append((val, "uwsm:HYPRCURSOR_THEME"))
+
+    # 3. HYPRCURSOR_THEME from process environment
     val = os.environ.get("HYPRCURSOR_THEME", "").strip()
     if val:
-        return val, "env:HYPRCURSOR_THEME"
+        candidates.append((val, "env:HYPRCURSOR_THEME"))
 
-    # 2. Check XCURSOR_THEME
+    # 4. XCURSOR_THEME from systemd / live user session
+    val = systemd_env.get("XCURSOR_THEME", "").strip()
+    if val:
+        candidates.append((val, "systemd:XCURSOR_THEME"))
+
+    # 5. XCURSOR_THEME from uwsm config
+    val = uwsm_env.get("XCURSOR_THEME", "").strip()
+    if val:
+        candidates.append((val, "uwsm:XCURSOR_THEME"))
+
+    # 6. XCURSOR_THEME from process environment
     val = os.environ.get("XCURSOR_THEME", "").strip()
     if val:
-        return val, "env:XCURSOR_THEME"
+        candidates.append((val, "env:XCURSOR_THEME"))
 
-    # 3. Check Hyprland getoption
+    # 7. Hyprland getoption
     try:
         res = subprocess.run(
             ["hyprctl", "getoption", "cursor:theme", "-j"],
@@ -212,11 +302,11 @@ def get_active_theme():
             data = json.loads(res.stdout)
             val = data.get("str", "").strip()
             if val and val != "default":
-                return val, "hyprctl:cursor:theme"
+                candidates.append((val, "hyprctl:cursor:theme"))
     except Exception:
         pass
 
-    # 4. Check GSettings
+    # 8. GSettings
     try:
         res = subprocess.run(
             ["gsettings", "get", "org.gnome.desktop.interface", "cursor-theme"],
@@ -225,11 +315,11 @@ def get_active_theme():
         if res.returncode == 0:
             val = res.stdout.strip().strip("'\"")
             if val and val != "default":
-                return val, "gsettings:cursor-theme"
+                candidates.append((val, "gsettings:cursor-theme"))
     except Exception:
         pass
 
-    # 5. Check index.theme in standard icon directories
+    # 9. Check index.theme in standard icon directories
     for def_path in [
         os.path.expanduser("~/.icons/default/index.theme"),
         os.path.expanduser("~/.local/share/icons/default/index.theme"),
@@ -242,24 +332,69 @@ def get_active_theme():
                         if line.strip().startswith("Inherits="):
                             val = line.strip().split("=", 1)[1].strip()
                             if val:
-                                return val, f"index.theme:{def_path}"
+                                candidates.append((val, f"index.theme:{def_path}"))
             except Exception:
+                pass
+
+    # Validate candidates in order
+    for name, src in candidates:
+        tdir = find_theme_dir(name)
+        if tdir and is_valid_cursor_theme_dir(tdir):
+            return name, src
+
+    # 10. Fallback: search standard theme directories for any installed working theme
+    for fallback_name in ["Adwaita", "AdwaitaLegacy", "breeze", "breeze-dark", "Yaru", "default"]:
+        tdir = find_theme_dir(fallback_name)
+        if tdir and is_valid_cursor_theme_dir(tdir):
+            return fallback_name, f"fallback:{fallback_name}"
+
+    for base in SEARCH_PATHS:
+        if os.path.isdir(base):
+            try:
+                for entry in sorted(os.listdir(base)):
+                    cand_path = os.path.join(base, entry)
+                    if os.path.isdir(cand_path) and is_valid_cursor_theme_dir(cand_path):
+                        return entry, f"discovered:{cand_path}"
+            except OSError:
                 pass
 
     return "default", "fallback:default"
 
 def get_active_size():
-    # 1. Check HYPRCURSOR_SIZE
+    systemd_env = _get_systemd_user_env()
+    uwsm_env = _get_uwsm_env()
+
+    # 1. Check HYPRCURSOR_SIZE from systemd
+    val = systemd_env.get("HYPRCURSOR_SIZE", "").strip()
+    if val and val.isdigit() and int(val) > 0:
+        return int(val), "systemd:HYPRCURSOR_SIZE"
+
+    # 2. Check HYPRCURSOR_SIZE from uwsm
+    val = uwsm_env.get("HYPRCURSOR_SIZE", "").strip()
+    if val and val.isdigit() and int(val) > 0:
+        return int(val), "uwsm:HYPRCURSOR_SIZE"
+
+    # 3. Check HYPRCURSOR_SIZE from env
     val = os.environ.get("HYPRCURSOR_SIZE", "").strip()
     if val and val.isdigit() and int(val) > 0:
         return int(val), "env:HYPRCURSOR_SIZE"
 
-    # 2. Check XCURSOR_SIZE
+    # 4. Check XCURSOR_SIZE from systemd
+    val = systemd_env.get("XCURSOR_SIZE", "").strip()
+    if val and val.isdigit() and int(val) > 0:
+        return int(val), "systemd:XCURSOR_SIZE"
+
+    # 5. Check XCURSOR_SIZE from uwsm
+    val = uwsm_env.get("XCURSOR_SIZE", "").strip()
+    if val and val.isdigit() and int(val) > 0:
+        return int(val), "uwsm:XCURSOR_SIZE"
+
+    # 6. Check XCURSOR_SIZE from env
     val = os.environ.get("XCURSOR_SIZE", "").strip()
     if val and val.isdigit() and int(val) > 0:
         return int(val), "env:XCURSOR_SIZE"
 
-    # 3. Check GSettings
+    # 7. Check GSettings
     try:
         res = subprocess.run(
             ["gsettings", "get", "org.gnome.desktop.interface", "cursor-size"],
@@ -272,7 +407,7 @@ def get_active_size():
     except Exception:
         pass
 
-    # 4. Check Hyprland getoption
+    # 8. Check Hyprland getoption
     try:
         res = subprocess.run(
             ["hyprctl", "getoption", "cursor:size", "-j"],
@@ -288,13 +423,6 @@ def get_active_size():
         pass
 
     return 24, "fallback:default"
-
-def find_theme_dir(theme_name):
-    for base in SEARCH_PATHS:
-        cand = os.path.join(base, theme_name)
-        if os.path.isdir(cand):
-            return cand
-    return None
 
 def probe_xcursor(theme_dir):
     for cursor_file in iter_xcursor_files(theme_dir):

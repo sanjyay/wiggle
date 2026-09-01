@@ -152,6 +152,20 @@ def main():
         test("Broken/Missing Theme: fails safely to capability=none",
              cap == "none" and backend is None)
 
+    # 7. Stale Environment Theme Fallback
+    get_active_theme = discover_module.get_active_theme
+    old_hypr_theme = os.environ.get("HYPRCURSOR_THEME")
+    try:
+        os.environ["HYPRCURSOR_THEME"] = "NonExistentThemeXYZ12345"
+        discovered_name, discovered_src = get_active_theme()
+        test("Stale HYPRCURSOR_THEME: skips missing candidate and falls back to valid theme",
+             discovered_name != "NonExistentThemeXYZ12345" and discover_module.find_theme_dir(discovered_name) is not None)
+    finally:
+        if old_hypr_theme is None:
+            os.environ.pop("HYPRCURSOR_THEME", None)
+        else:
+            os.environ["HYPRCURSOR_THEME"] = old_hypr_theme
+
     print("\n==========================================================")
     print(f"Results: {passed}/{total} tests passed")
     return 0 if passed == total else 1

@@ -128,7 +128,7 @@ Item {
           else if (line.startsWith("CURSOR_IMAGE_SIZE=")) imageSizeStr = line.substring(18)
         }
 
-        if (status === "OK" && theme !== "" && sizeStr !== "") {
+        if (status === "OK" && theme !== "" && sizeStr !== "" && imagePath !== "" && capability !== "none") {
           var parsedSize = parseInt(sizeStr)
           if (!isNaN(parsedSize) && parsedSize > 0) {
             root.cursorTheme = theme
@@ -154,11 +154,12 @@ Item {
           }
         }
 
-        if (!root.cursorConfigured) {
-          root.cursorTheme = ""
-          root.cursorSize = 24
-          console.warn("wiggle: could not safely determine cursor configuration")
-        }
+        root.cursorConfigured = false
+        root.cursorTheme = ""
+        root.cursorSize = 24
+        root.cursorCapability = "none"
+        root.cursorImage = ""
+        console.warn("wiggle: could not safely determine cursor configuration")
       }
     }
   }
@@ -237,6 +238,7 @@ Item {
 
   function onShakeDetected(shakeX, shakeY) {
     if (!root.cursorConfigured || root.cursorImage === "" || root.cursorCapability === "none") {
+      discoverCursorSettings()
       return
     }
 
