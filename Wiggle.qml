@@ -24,14 +24,15 @@ Item {
   property var shell: null
   property var manifest: null
 
-  // ── KDE Behavioral Constants ─────────────────────────────────────────────
-  readonly property real initialMagnification: 3.0
-  readonly property real overMagnification: 1.0
-  readonly property int animationDurationMs: 200
+  // ── Natural Animation & Physics Constants ─────────────────────────────────
+  readonly property real initialMagnification: 2.8
+  readonly property real overMagnification: 0.8
+  readonly property int animationDurationMs: 140
+  readonly property int deflateDurationMs: 240
   readonly property int deflateTimeoutMs: 900
   readonly property int failsafeTimeoutMs: 5000
   readonly property int cursorHandoffTimeoutMs: 350
-  readonly property int renderGraceMs: 50
+  readonly property int renderGraceMs: 20
 
   // ── Universal Theme & Asset State ───────────────────────────────────────
   property string cursorTheme: ""
@@ -308,6 +309,9 @@ Item {
 
   function startScaleAnimation(newTarget) {
     scaleAnimation.stop()
+    var isExpanding = newTarget > root.currentMagnification
+    scaleAnimation.duration = isExpanding ? root.animationDurationMs : root.deflateDurationMs
+    scaleAnimation.easing.type = isExpanding ? Easing.OutCubic : Easing.InOutQuad
     scaleAnimation.from = root.currentMagnification
     scaleAnimation.to = newTarget
     scaleAnimation.start()
@@ -343,10 +347,7 @@ Item {
   function deflate() {
     console.log("wiggle: deflate timeout reached, returning to 1.0x")
     root.targetMagnification = 1.0
-    scaleAnimation.stop()
-    scaleAnimation.from = root.currentMagnification
-    scaleAnimation.to = 1.0
-    scaleAnimation.start()
+    startScaleAnimation(1.0)
   }
 
   function finishDeactivation() {
@@ -366,6 +367,7 @@ Item {
     root.currentMagnification = 1.0
     root.targetMagnification = 1.0
     deflateTimer.stop()
+    root.discoverCursorSettings()
   }
 
   function onCursorShowFailed() {
@@ -602,8 +604,13 @@ Item {
           id: cursorImageItem
           anchors.fill: parent
           source: root.cursorImage ? "file://" + root.cursorImage : ""
+          sourceSize: (root.cursorCapability === "scalable" || (root.cursorImage && root.cursorImage.endsWith(".svg")))
+            ? Qt.size(256, 256)
+            : undefined
           smooth: true
-          mipmap: false
+          mipmap: true
+          antialiasing: true
+          asynchronous: false
           onStatusChanged: proxyWindow.maybeStartWarmup()
         }
       }
@@ -667,6 +674,18 @@ Item {
         console.warn("wiggle: discarded an early shake because render warm-up did not complete")
         root.pendingActivation = false
         root.pendingMagnification = 1.0
+      }
+    }
+  }
+
+  Timer {
+    id: discoveryRefreshTimer
+    interval: 3000
+    repeat: true
+    running: true
+    onTriggered: {
+      if (!root.proxyActive && root.targetMagnification <= 1.0) {
+        root.discoverCursorSettings()
       }
     }
   }

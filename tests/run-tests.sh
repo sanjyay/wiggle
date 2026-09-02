@@ -133,12 +133,34 @@ run_test "Real proxy render path is prewarmed" bash -c "
   grep -q 'to: root.initialMagnification' '$PLUGIN_DIR/Wiggle.qml' &&
   grep -q 'property: \"warmupOffset\"' '$PLUGIN_DIR/Wiggle.qml' &&
   grep -q 'opacity: proxyWindow.warmupActive ? 0.002' '$PLUGIN_DIR/Wiggle.qml' &&
-  grep -q 'mipmap: false' '$PLUGIN_DIR/Wiggle.qml'
+  grep -q 'mipmap: true' '$PLUGIN_DIR/Wiggle.qml'
 "
 
 run_test "Render handoff uses supported QsWindow API" bash -c "
   ! grep -q 'onFrameSwapped' '$PLUGIN_DIR/Wiggle.qml' &&
   ! grep -q '\\.update()' '$PLUGIN_DIR/Wiggle.qml'
+"
+
+# ── 11. Theme & Nominal Size Integrity (Banana, Adwaita, Bibata) ──
+run_test "Banana visual preservation & high-DPI asset extraction" bash -c "
+  out=\$('$PLUGIN_DIR/scripts/wiggle-discover-cursor' --theme Banana --size 32)
+  echo \"\$out\" | grep -q 'THEME=Banana' &&
+  echo \"\$out\" | grep -q 'SIZE=32' &&
+  echo \"\$out\" | grep -q 'CURSOR_IMAGE_SIZE=96,96'
+"
+
+run_test "Banana semantic roles (pointer, text, resize)" bash -c "
+  out_p=\$('$PLUGIN_DIR/scripts/wiggle-discover-cursor' --theme Banana --size 32 --shape pointer)
+  out_t=\$('$PLUGIN_DIR/scripts/wiggle-discover-cursor' --theme Banana --size 32 --shape text)
+  out_r=\$('$PLUGIN_DIR/scripts/wiggle-discover-cursor' --theme Banana --size 32 --shape resize)
+  echo \"\$out_p\" | grep -q 'STATUS=OK' &&
+  echo \"\$out_t\" | grep -q 'STATUS=OK' &&
+  echo \"\$out_r\" | grep -q 'STATUS=OK'
+"
+
+run_test "No global cursor mutation or setcursor calls" bash -c "
+  ! grep -R -n --exclude-dir=.git --exclude-dir=tests 'hyprctl setcursor' '$PLUGIN_DIR' &&
+  ! grep -R -n --exclude-dir=.git --exclude-dir=tests 'setenv' '$PLUGIN_DIR'
 "
 
 # ── Summary ──

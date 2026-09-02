@@ -169,14 +169,43 @@ def _read_xcursor(path):
         return None
 
 
-def iter_xcursor_files(theme_dir):
+SHAPE_ROLE_MAP = {
+    "default": ["default", "left_ptr", "arrow", "top_left_arrow", "left-arrow"],
+    "pointer": ["link", "pointer", "hand2", "hand1", "pointing_hand"],
+    "hand": ["link", "hand2", "hand1", "pointer", "pointing_hand"],
+    "link": ["link", "hand2", "hand1", "pointer", "pointing_hand"],
+    "text": ["text", "xterm", "ibeam"],
+    "ibeam": ["text", "xterm", "ibeam"],
+    "xterm": ["text", "xterm", "ibeam"],
+    "resize": ["se-resize", "bottom_right_corner", "size_fdiag", "col-resize", "row-resize", "all-scroll", "move"],
+    "col-resize": ["col-resize", "sb_h_double_arrow", "h_double_arrow", "ew-resize", "size-hor"],
+    "row-resize": ["row-resize", "sb_v_double_arrow", "v_double_arrow", "ns-resize", "size-ver"],
+    "all-scroll": ["all-scroll", "move", "grabbing", "closedhand", "size_all"],
+    "move": ["move", "all-scroll", "grabbing", "closedhand", "size_all"],
+    "grabbing": ["grabbing", "closedhand", "move", "all-scroll"],
+    "grab": ["grab", "openhand", "hand1", "hand2"],
+    "crosshair": ["crosshair", "cross", "tcross"],
+    "wait": ["wait", "watch", "left_ptr_watch", "progress"],
+    "progress": ["left_ptr_watch", "half-busy", "progress", "watch", "wait"],
+    "not-allowed": ["not-allowed", "crossed_circle", "circle", "dnd_no_drop"],
+    "help": ["help", "question_arrow", "whats_this"],
+}
+
+
+def iter_xcursor_files(theme_dir, shape_name="default"):
     """Yield distinct candidate cursor files in preferred/fallback order."""
     cursors_dir = os.path.join(theme_dir, "cursors")
     if not os.path.isdir(cursors_dir):
         return
-    names = ["default", "left_ptr", "arrow", "top_left_arrow"]
+    candidates = SHAPE_ROLE_MAP.get(shape_name, [shape_name])
+    names = list(candidates)
+    for def_name in SHAPE_ROLE_MAP["default"]:
+        if def_name not in names:
+            names.append(def_name)
     try:
-        names.extend(sorted(os.listdir(cursors_dir)))
+        for f in sorted(os.listdir(cursors_dir)):
+            if f not in names:
+                names.append(f)
     except OSError:
         pass
     seen = set()
@@ -195,8 +224,24 @@ def find_theme_dir(theme_name):
         return None
     for base in SEARCH_PATHS:
         cand = os.path.join(base, theme_name)
+        if os.path.isdir(cand) and is_valid_cursor_theme_dir(cand):
+            return cand
+    for base in SEARCH_PATHS:
+        cand = os.path.join(base, theme_name)
         if os.path.isdir(cand):
             return cand
+    # Fallback to matched imported theme names (e.g. CursorSwitcher-Imported-<name>-*)
+    for base in SEARCH_PATHS:
+        if not os.path.isdir(base):
+            continue
+        try:
+            for entry in sorted(os.listdir(base)):
+                if theme_name.lower() in entry.lower():
+                    cand = os.path.join(base, entry)
+                    if os.path.isdir(cand) and is_valid_cursor_theme_dir(cand):
+                        return cand
+        except OSError:
+            pass
     return None
 
 def is_valid_cursor_theme_dir(theme_dir):
@@ -261,7 +306,7 @@ def get_active_theme():
 
     candidates = []
 
-    # 1. HYPRCURSOR_THEME from systemd / live user session
+    # 1. HYPRCURSOR_THEME from systemd / live user session (updated dynamically by Cursor Theme Manager)
     val = systemd_env.get("HYPRCURSOR_THEME", "").strip()
     if val:
         candidates.append((val, "systemd:HYPRCURSOR_THEME"))
@@ -364,7 +409,7 @@ def get_active_size():
     systemd_env = _get_systemd_user_env()
     uwsm_env = _get_uwsm_env()
 
-    # 1. Check HYPRCURSOR_SIZE from systemd
+    # 1. Check HYPRCURSOR_SIZE from systemd (updated dynamically by Cursor Theme Manager)
     val = systemd_env.get("HYPRCURSOR_SIZE", "").strip()
     if val and val.isdigit() and int(val) > 0:
         return int(val), "systemd:HYPRCURSOR_SIZE"
@@ -441,9 +486,9 @@ def png_chunk(kind, payload):
     return (struct.pack(">I", len(payload)) + kind + payload +
             struct.pack(">I", binascii.crc32(kind + payload) & 0xffffffff))
 
-def export_xcursor_image(theme_dir, wanted_size):
-    """Export the nearest left-pointer frame as straight-alpha RGBA PNG."""
-    for cursor_file in iter_xcursor_files(theme_dir):
+def export_xcursor_image(theme_dir, wanted_size=24, shape_name="default"):
+    """Export the nearest cursor frame for shape_name as straight-alpha RGBA PNG."""
+    for cursor_file in iter_xcursor_files(theme_dir, shape_name):
         data = _read_xcursor(cursor_file)
         if data is None:
             continue
@@ -533,7 +578,7 @@ def _write_extracted_asset(data_bytes, suffix):
             os.unlink(tmp_path)
         return ""
 
-def find_hyprcursor_shape(theme_dir):
+def find_hyprcursor_shape(theme_dir, shape_name="default"):
     manifest_candidates = [
         os.path.join(theme_dir, "manifest.hl"),
         os.path.join(theme_dir, "manifest.toml")
@@ -559,8 +604,14 @@ def find_hyprcursor_shape(theme_dir):
     if not os.path.isdir(shapes_dir):
         return None, None
 
+    candidates = SHAPE_ROLE_MAP.get(shape_name, [shape_name])
+    names = list(candidates)
+    for def_name in SHAPE_ROLE_MAP["default"]:
+        if def_name not in names:
+            names.append(def_name)
+
     shape_file = None
-    for cand_name in ["default", "left_ptr", "arrow"]:
+    for cand_name in names:
         for ext in [".hlc", ".hl", ".meta", ""]:
             p = os.path.join(shapes_dir, cand_name + ext)
             if os.path.isfile(p):
@@ -576,10 +627,11 @@ def find_hyprcursor_shape(theme_dir):
 
     return shapes_dir, shape_file
 
-def _parse_hyprcursor_lines(lines, shapes_dir, shape_file):
+def _parse_hyprcursor_lines(lines, shapes_dir, shape_file, wanted_size=24):
     resize_algo = "none"
     has_svg = False
     discrete_sizes = set()
+    best_diff = float("inf")
     best_size = 0
     best_target = None
     best_hx = 0.0
@@ -617,26 +669,28 @@ def _parse_hyprcursor_lines(lines, shapes_dir, shape_file):
                 if target.lower().endswith(".svg") or sz == 0:
                     has_svg = True
                     if not best_target or best_target.lower().endswith(".svg"):
-                        best_size = sz if sz > 0 else 256
+                        best_size = sz if sz > 0 else (wanted_size or 256)
                         best_target = target
                         best_hx = hx
                         best_hy = hy
                 elif sz > 0:
                     discrete_sizes.add(sz)
-                    if sz > best_size:
+                    diff = abs(sz - wanted_size)
+                    if diff < best_diff:
+                        best_diff = diff
                         best_size = sz
                         best_target = target
                         best_hx = hx
                         best_hy = hy
 
     if best_target and (global_hx is not None or global_hy is not None):
-        best_hx = (global_hx or 0.0) * (best_size or 24)
-        best_hy = (global_hy or 0.0) * (best_size or 24)
+        best_hx = (global_hx or 0.0) * (best_size or wanted_size or 24)
+        best_hy = (global_hy or 0.0) * (best_size or wanted_size or 24)
 
     return resize_algo, has_svg, discrete_sizes, best_size, best_target, best_hx, best_hy
 
-def export_hyprcursor_image(theme_dir):
-    shapes_dir, shape_file = find_hyprcursor_shape(theme_dir)
+def export_hyprcursor_image(theme_dir, wanted_size=24, shape_name="default"):
+    shapes_dir, shape_file = find_hyprcursor_shape(theme_dir, shape_name)
     if not shape_file:
         return "", 0, 0, 0, 0
 
@@ -658,7 +712,7 @@ def export_hyprcursor_image(theme_dir):
             return "", 0, 0, 0, 0
 
     algo, has_svg, disc, best_size, best_target, best_hx, best_hy = _parse_hyprcursor_lines(
-        lines, shapes_dir, shape_file
+        lines, shapes_dir, shape_file, wanted_size
     )
 
     if not best_target:
@@ -672,7 +726,7 @@ def export_hyprcursor_image(theme_dir):
                     ext = os.path.splitext(best_target)[1]
                     out_path = _write_extracted_asset(data, ext)
                     if out_path:
-                        img_size = best_size if best_size > 0 else 256
+                        img_size = best_size if best_size > 0 else (wanted_size or 256)
                         return out_path, int(round(best_hx)), int(round(best_hy)), img_size, img_size
         except Exception:
             pass
@@ -680,13 +734,13 @@ def export_hyprcursor_image(theme_dir):
     else:
         file_path = os.path.join(shapes_dir, best_target)
         if os.path.isfile(file_path):
-            img_size = best_size if best_size > 0 else 256
+            img_size = best_size if best_size > 0 else (wanted_size or 256)
             return file_path, int(round(best_hx)), int(round(best_hy)), img_size, img_size
 
     return "", 0, 0, 0, 0
 
-def probe_hyprcursor(theme_dir):
-    shapes_dir, shape_file = find_hyprcursor_shape(theme_dir)
+def probe_hyprcursor(theme_dir, shape_name="default"):
+    shapes_dir, shape_file = find_hyprcursor_shape(theme_dir, shape_name)
     if not shape_file:
         return None, "none", []
 
@@ -720,8 +774,16 @@ def probe_hyprcursor(theme_dir):
 
 
 def main():
-    theme_name, theme_src = get_active_theme()
-    base_size, size_src = get_active_size()
+    import argparse
+    parser = argparse.ArgumentParser(description="Wiggle Cursor Discovery")
+    parser.add_argument("--theme", default=None, help="Explicit theme name")
+    parser.add_argument("--size", type=int, default=None, help="Explicit base cursor size")
+    parser.add_argument("--shape", default="default", help="Semantic shape name / role")
+    args = parser.parse_args()
+
+    theme_name, theme_src = (args.theme, "cli:--theme") if args.theme else get_active_theme()
+    base_size, size_src = (args.size, "cli:--size") if args.size else get_active_size()
+    shape_name = args.shape
 
     theme_dir = find_theme_dir(theme_name)
     backend = "unknown"
@@ -730,7 +792,7 @@ def main():
 
     if theme_dir:
         # Check Hyprcursor first
-        h_backend, h_cap, h_sizes = probe_hyprcursor(theme_dir)
+        h_backend, h_cap, h_sizes = probe_hyprcursor(theme_dir, shape_name)
         if h_backend:
             backend = h_backend
             capability = h_cap
@@ -745,15 +807,16 @@ def main():
 
     image_path = ""
     hot_x = hot_y = image_width = image_height = 0
+    hi_res_target = max(available_sizes) if available_sizes else (base_size * 4)
 
     if theme_dir:
         if backend.startswith("hyprcursor"):
-            image_path, hot_x, hot_y, image_width, image_height = export_hyprcursor_image(theme_dir)
+            image_path, hot_x, hot_y, image_width, image_height = export_hyprcursor_image(
+                theme_dir, hi_res_target, shape_name
+            )
         if not image_path and (backend == "xcursor_discrete" or probe_xcursor(theme_dir)):
-            # Prefetch highest available resolution asset for scaling up to 11x
-            wanted_nominal = max(available_sizes) if available_sizes else (base_size * 4)
             image_path, hot_x, hot_y, image_width, image_height = export_xcursor_image(
-                theme_dir, wanted_nominal
+                theme_dir, hi_res_target, shape_name
             )
 
     avail_str = ",".join(str(s) for s in available_sizes)
