@@ -30,7 +30,7 @@ https://github.com/user-attachments/assets/d1133515-9c44-48a9-8b22-29bc225317ae
 Install directly with the Omarchy plugin manager:
 
 ```bash
-omarchy plugin add https://github.com/sanjyay/wiggle --enable
+omarchy plugin add https://github.com/sanjyyayy/wiggle --enable
 ```
 
 To reload the shell immediately:
@@ -44,8 +44,8 @@ Wiggle has no user-facing settings. Its shake sensitivity, magnification, and ti
 ## Enable or Disable
 
 ```bash
-omarchy plugin enable io.github.sanjyay.wiggle
-omarchy plugin disable io.github.sanjyay.wiggle
+omarchy plugin enable io.github.sanjyyayy.wiggle
+omarchy plugin disable io.github.sanjyyayy.wiggle
 ```
 
 Disabling Wiggle stops its helper and restores the native cursor through the normal shutdown path.
@@ -55,7 +55,7 @@ Disabling Wiggle stops its helper and restores the native cursor through the nor
 ## Removal
 
 ```bash
-omarchy plugin remove io.github.sanjyay.wiggle
+omarchy plugin remove io.github.sanjyyayy.wiggle
 ```
 
 ---
