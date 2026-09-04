@@ -2,11 +2,13 @@
   "schemaVersion": 1,
   "id": "io.github.sanjyay.wiggle",
   "name": "Wiggle",
-  "version": "1.1.1",
-  "author": "sanjyyayy",
+  "version": "1.1.0",
+  "author": "sanjyay",
   "license": "MIT",
   "description": "Shake your mouse to find your cursor.",
-  "kinds": ["service"],
+  "kinds": [
+    "service"
+  ],
   "entryPoints": {
     "service": "Wiggle.qml"
   },

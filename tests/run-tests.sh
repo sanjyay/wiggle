@@ -50,7 +50,7 @@ import json, sys
 with open('$PLUGIN_DIR/manifest.json') as f:
     m = json.load(f)
 assert m['schemaVersion'] == 1
-assert m['id'] == 'io.github.sanjyyayy.wiggle'
+assert m['id'] == 'io.github.sanjyay.wiggle'
 assert 'service' in m['kinds']
 assert 'service' in m['entryPoints']
 print('  manifest.json: schema OK')
