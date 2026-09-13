@@ -325,13 +325,12 @@ static int add_device(const char *path, DeviceState *devices, struct pollfd *pfd
     int is_touchpad = libevdev_has_event_code(dev, EV_ABS, ABS_MT_POSITION_X);
     int is_direct = libevdev_has_property(dev, INPUT_PROP_DIRECT);
 
-    // Reject keyboards (devices with alphanumeric text keys)
-    int has_keyboard_keys = libevdev_has_event_code(dev, EV_KEY, KEY_A) ||
-                           libevdev_has_event_code(dev, EV_KEY, KEY_SPACE) ||
-                           libevdev_has_event_code(dev, EV_KEY, KEY_B) ||
-                           libevdev_has_event_code(dev, EV_KEY, KEY_Z);
-
-    if (!has_rel || is_touchpad || is_direct || has_keyboard_keys) {
+    /*
+     * Some composite mouse receivers expose alphanumeric keys on the same
+     * event node as REL_X/REL_Y (notably Logitech HID++ devices). Classify by
+     * pointer axes here and discard all EV_KEY events in the read loop below.
+     */
+    if (!has_rel || is_touchpad || is_direct) {
         libevdev_free(dev);
         close(fd);
         return 0;
