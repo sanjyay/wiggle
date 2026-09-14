@@ -1,4 +1,4 @@
-# Wiggle
+# Wiggle [![Built for Omarchy: Plugin](https://raw.githubusercontent.com/tcballard/omarchy-badges/75975e5b5bf75e7ede3764bcd2950046f7abfe2c/badges/v1/omarchy-plugin.svg)](https://github.com/tcballard/omarchy-badges)
 
 **Shake your mouse to find your cursor.**
 
