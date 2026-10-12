@@ -301,6 +301,46 @@ static bool detector_update(ShakeDetector *det, double dx, double dy, int64_t ts
 
 /* ─── Device Discovery & Hotplug ─── */
 
+/*
+ * Input devices that report REL_X/REL_Y and mouse buttons but are not
+ * pointers. Capabilities cannot tell these apart from real mice (udev's own
+ * input_id tags them ID_INPUT_MOUSE as well), so they are excluded by exact
+ * USB vendor/product ID. Add entries only with a capability dump showing the
+ * node is not a pointer.
+ */
+static const struct {
+    uint16_t vendor;
+    uint16_t product;
+    const char *description;
+} ignored_devices[] = {
+    { 0x0b05, 0x196b, "ASUS ROG Claymore II keyboard media dial" },
+};
+
+static bool is_pointer_device(struct libevdev *dev) {
+    int has_rel = libevdev_has_event_type(dev, EV_REL) &&
+                  libevdev_has_event_code(dev, EV_REL, REL_X) &&
+                  libevdev_has_event_code(dev, EV_REL, REL_Y);
+
+    int is_touchpad = libevdev_has_event_code(dev, EV_ABS, ABS_MT_POSITION_X);
+    int is_direct = libevdev_has_property(dev, INPUT_PROP_DIRECT);
+
+    /*
+     * Some composite mouse receivers expose alphanumeric keys on the same
+     * event node as REL_X/REL_Y (notably Logitech HID++ devices). Classify by
+     * pointer axes here and discard all EV_KEY events in the read loop below.
+     */
+    if (!has_rel || is_touchpad || is_direct) return false;
+
+    uint16_t vendor = (uint16_t)libevdev_get_id_vendor(dev);
+    uint16_t product = (uint16_t)libevdev_get_id_product(dev);
+    for (size_t i = 0; i < sizeof(ignored_devices) / sizeof(ignored_devices[0]); i++) {
+        if (ignored_devices[i].vendor == vendor && ignored_devices[i].product == product)
+            return false;
+    }
+
+    return true;
+}
+
 static int add_device(const char *path, DeviceState *devices, struct pollfd *pfds, int *active_count) {
     if (*active_count >= MAX_DEVICES) return 0;
 
@@ -318,39 +358,7 @@ static int add_device(const char *path, DeviceState *devices, struct pollfd *pfd
         return 0;
     }
 
-    int has_rel = libevdev_has_event_type(dev, EV_REL) &&
-                  libevdev_has_event_code(dev, EV_REL, REL_X) &&
-                  libevdev_has_event_code(dev, EV_REL, REL_Y);
-
-    int is_touchpad = libevdev_has_event_code(dev, EV_ABS, ABS_MT_POSITION_X);
-    int is_direct = libevdev_has_property(dev, INPUT_PROP_DIRECT);
-
-    /*
-     * Some composite mouse receivers expose alphanumeric keys on the same
-     * event node as REL_X/REL_Y (notably Logitech HID++ devices). Classify by
-     * pointer axes here and discard all EV_KEY events in the read loop below.
-     */
-    /*
-     * Reject keyboards' auxiliary HID interfaces (media/volume dials, macro
-     * knobs). They expose REL_X/REL_Y and BTN_LEFT/RIGHT/MIDDLE for
-     * compatibility, so they otherwise pass as pointers. Two signals:
-     *  - the device name says "keyboard" (e.g. "Asus Keyboard"), and
-     *  - the device reports fewer than 5 distinct REL axes. Observed dials
-     *    report only REL_X, REL_Y, REL_WHEEL and REL_WHEEL_HI_RES, whereas a
-     *    real mouse also reports horizontal-wheel codes (6 axes on a Logitech
-     *    G502 X PLUS). The axis count also catches dials whose name does not
-     *    contain "keyboard".
-     */
-    const char *name = libevdev_get_name(dev);
-    int is_keyboard_named = name && strcasestr(name, "keyboard") != NULL;
-
-    int rel_axis_count = 0;
-    for (int code = 0; code <= REL_MAX; code++) {
-        if (libevdev_has_event_code(dev, EV_REL, code)) rel_axis_count++;
-    }
-    int is_minor_control = rel_axis_count < 5;
-
-    if (!has_rel || is_touchpad || is_direct || is_keyboard_named || is_minor_control) {
+    if (!is_pointer_device(dev)) {
         libevdev_free(dev);
         close(fd);
         return 0;

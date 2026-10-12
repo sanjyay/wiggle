@@ -36,6 +36,14 @@ gcc -O2 -Wall -Wextra -Werror \
 
 run_test "Shake detection algorithm" "$TEST_DIR/test-shake-detector"
 
+# ── 1b. Device discovery unit tests ──
+echo "Building device discovery tests..."
+gcc -O2 -Wall -Wextra -Werror \
+  -o "$TEST_DIR/test-device-discovery" \
+  "$TEST_DIR/test-device-discovery.c" -lm $(pkg-config --cflags --libs libevdev) 2>&1
+
+run_test "Pointer device discovery" "$TEST_DIR/test-device-discovery"
+
 # ── 2. Monitor binary exists and starts ──
 run_test "Monitor binary exists" test -x "$PLUGIN_DIR/scripts/wiggle-monitor"
 
