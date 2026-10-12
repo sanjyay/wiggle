@@ -330,7 +330,27 @@ static int add_device(const char *path, DeviceState *devices, struct pollfd *pfd
      * event node as REL_X/REL_Y (notably Logitech HID++ devices). Classify by
      * pointer axes here and discard all EV_KEY events in the read loop below.
      */
-    if (!has_rel || is_touchpad || is_direct) {
+    /*
+     * Reject keyboards' auxiliary HID interfaces (media/volume dials, macro
+     * knobs). They expose REL_X/REL_Y and BTN_LEFT/RIGHT/MIDDLE for
+     * compatibility, so they otherwise pass as pointers. Two signals:
+     *  - the device name says "keyboard" (e.g. "Asus Keyboard"), and
+     *  - the device reports fewer than 5 distinct REL axes. Observed dials
+     *    report only REL_X, REL_Y, REL_WHEEL and REL_WHEEL_HI_RES, whereas a
+     *    real mouse also reports horizontal-wheel codes (6 axes on a Logitech
+     *    G502 X PLUS). The axis count also catches dials whose name does not
+     *    contain "keyboard".
+     */
+    const char *name = libevdev_get_name(dev);
+    int is_keyboard_named = name && strcasestr(name, "keyboard") != NULL;
+
+    int rel_axis_count = 0;
+    for (int code = 0; code <= REL_MAX; code++) {
+        if (libevdev_has_event_code(dev, EV_REL, code)) rel_axis_count++;
+    }
+    int is_minor_control = rel_axis_count < 5;
+
+    if (!has_rel || is_touchpad || is_direct || is_keyboard_named || is_minor_control) {
         libevdev_free(dev);
         close(fd);
         return 0;
