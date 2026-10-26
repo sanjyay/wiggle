@@ -12,7 +12,7 @@ Wiggle implements a minimal-privilege architecture for cursor magnification:
    - Input grabbing (`EVIOCGRAB`) and virtual device creation (`uinput`) are never used by the monitor.
 
 2. **Pointer Position Privacy:**
-   - Absolute cursor coordinates are queried from local Hyprland IPC when a shake is detected and while the locator proxy may need to track the pointer.
+   - Absolute cursor coordinates are queried from local Hyprland IPC at most 20 times per second while the pointer moves, when a shake is detected, and while the locator proxy may need to track the pointer. The motion samples cover the last second only and are used to ignore shakes while the pointer is locked.
    - Coordinates reside strictly in volatile memory and are never written to disk, logged in production, or transmitted over network.
 
 3. **No Network Access:**

@@ -28,10 +28,15 @@ Item {
   readonly property real initialMagnification: 2.8
   readonly property real overMagnification: 0.8
   readonly property int animationDurationMs: 140
+  // Minimum time each size stays on screen before the next step, so fast
+  // shakes still show every size instead of growing straight past them.
+  readonly property int stepHoldMs: 300
   readonly property int deflateDurationMs: 240
   readonly property int deflateTimeoutMs: 900
   readonly property int failsafeTimeoutMs: 5000
-  readonly property int cursorHandoffTimeoutMs: 350
+  // HIDDEN is only sent once the native cursor is really gone. That takes up
+  // to one 500ms Hyprland cursor tick, and the helper gives up after 600ms.
+  readonly property int cursorHandoffTimeoutMs: 900
   readonly property int renderGraceMs: 20
   // Hyprland applies cursor:invisible from a 500ms ticker, so the native
   // cursor can stay hidden for up to 500ms after SHOW is acknowledged.
@@ -62,6 +67,7 @@ Item {
   property bool awaitingShownAck: false
   property bool cursorRestoreDegraded: false
   property bool pendingActivation: false
+  property bool stepQueued: false
   property real pendingMagnification: 1.0
   property int showRetryCount: 0
 
@@ -272,13 +278,14 @@ Item {
         return
       }
       beginActivation(newTarget)
+    } else if (root.awaitingProxyFrame || root.awaitingHiddenAck || isGrowing() || stepHoldTimer.running) {
+      // Let the current size grow and be held so every size is actually
+      // shown. One step is remembered and applied when the hold ends.
+      root.stepQueued = true
+      safetyTimer.restart()
+      return
     } else {
-      newTarget = root.targetMagnification + root.overMagnification
-      root.targetMagnification = newTarget
-      if (root.awaitingProxyFrame || root.awaitingHiddenAck) {
-        return
-      }
-      startScaleAnimation(newTarget)
+      newTarget = growOneStep()
     }
 
     console.log("wiggle: shake detected -> target magnification=" + newTarget +
@@ -287,9 +294,23 @@ Item {
     safetyTimer.restart()
   }
 
+  function isGrowing() {
+    return scaleAnimation.running && scaleAnimation.to > scaleAnimation.from
+  }
+
+  function growOneStep() {
+    root.stepQueued = false
+    var newTarget = root.targetMagnification + root.overMagnification
+    root.targetMagnification = newTarget
+    startScaleAnimation(newTarget)
+    return newTarget
+  }
+
   function beginActivation(newTarget) {
     warmupWaitTimer.stop()
     proxyReleaseTimer.stop()
+    stepHoldTimer.stop()
+    root.stepQueued = false
     root.pendingActivation = false
     root.pendingMagnification = 1.0
     root.currentMagnification = 1.0
@@ -342,6 +363,8 @@ Item {
     root.targetMagnification = 1.0
     root.pendingActivation = false
     root.pendingMagnification = 1.0
+    root.stepQueued = false
+    stepHoldTimer.stop()
     warmupWaitTimer.stop()
     deflateTimer.stop()
     safetyTimer.stop()
@@ -350,6 +373,8 @@ Item {
 
   function deflate() {
     console.log("wiggle: deflate timeout reached, returning to 1.0x")
+    stepHoldTimer.stop()
+    root.stepQueued = false
     root.targetMagnification = 1.0
     startScaleAnimation(1.0)
   }
@@ -399,6 +424,7 @@ Item {
 
   function restoreState() {
     proxyReleaseTimer.stop()
+    stepHoldTimer.stop()
     deflateTimer.stop()
     safetyTimer.stop()
     handoffTimer.stop()
@@ -411,6 +437,7 @@ Item {
     root.cursorRestoreDegraded = false
     root.pendingActivation = false
     root.pendingMagnification = 1.0
+    root.stepQueued = false
     root.showRetryCount = 0
     root.proxyActive = false
     root.currentMagnification = 1.0
@@ -430,7 +457,20 @@ Item {
       if (!running) {
         if (Math.abs(root.currentMagnification - 1.0) < 0.05 && root.targetMagnification <= 1.0) {
           root.finishDeactivation()
+        } else if (root.targetMagnification > 1.0 && root.currentMagnification >= root.targetMagnification) {
+          stepHoldTimer.restart()
         }
+      }
+    }
+  }
+
+  Timer {
+    id: stepHoldTimer
+    interval: root.stepHoldMs
+    repeat: false
+    onTriggered: {
+      if (root.stepQueued && root.targetMagnification > 1.0) {
+        console.log("wiggle: queued shake -> target magnification=" + root.growOneStep() + "x")
       }
     }
   }
@@ -481,7 +521,7 @@ Item {
     if (root.renderWarmupComplete && root.pendingActivation) {
       warmupWaitTimer.stop()
       root.beginActivation(root.pendingMagnification)
-      root.safetyTimer.restart()
+      safetyTimer.restart()
     }
   }
 

@@ -133,6 +133,18 @@ run_test "Cursor restoration remains visible on acknowledgement failure" bash -c
   awk '/Component.onDestruction:/{seen=1} seen && /restoreState\(\)/{restore=NR} seen && /stopMonitor\(\)/{stop=NR; exit} END{exit !(restore && stop && restore < stop)}' '$PLUGIN_DIR/Wiggle.qml'
 "
 
+run_test "Shakes are ignored while a game owns the pointer" bash -c "
+  grep -q 'travel_extent(&g_travel, ts) < MIN_POINTER_TRAVEL_PX' '$PLUGIN_DIR/scripts/wiggle-monitor.c' &&
+  grep -q '!proxy_engaged && !cursor_drawn()' '$PLUGIN_DIR/scripts/wiggle-monitor.c' &&
+  grep -q 'if (focused_window_is_game())' '$PLUGIN_DIR/scripts/wiggle-monitor.c' &&
+  grep -q 'xwayland' '$PLUGIN_DIR/scripts/wiggle-monitor.c'
+"
+
+run_test "HIDDEN waits for the native cursor to disappear" bash -c "
+  grep -q 'HW_CURSOR' '$PLUGIN_DIR/scripts/wiggle-monitor.c' &&
+  grep -q 'HIDE_APPLY_TIMEOUT_MS' '$PLUGIN_DIR/scripts/wiggle-monitor.c'
+"
+
 run_test "Proxy outlives Hyprland's cursor visibility tick" bash -c "
   grep -q 'proxyReleaseDelayMs: 550' '$PLUGIN_DIR/Wiggle.qml' &&
   grep -q 'proxyReleaseTimer.restart()' '$PLUGIN_DIR/Wiggle.qml' &&

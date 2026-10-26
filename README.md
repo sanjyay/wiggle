@@ -14,14 +14,14 @@ https://github.com/user-attachments/assets/d1133515-9c44-48a9-8b22-29bc225317ae
 
 ## Features
 
-* **KDE Kinematic Shake Detection:** Evaluates relative movement over a rolling 1000ms window with vector coalescing and sensitivity thresholding ($sensitivity = 4.0$).
+* **KDE Kinematic Shake Detection:** Evaluates relative movement over a rolling 1000ms window with vector coalescing and sensitivity thresholding ($sensitivity = 4.0$). Like KWin, shakes are ignored while a game owns the pointer: the compositor cursor has to actually move and be drawn, and fullscreen XWayland windows (Proton games) or windows with the game content type are skipped. Fullscreen video in a browser still works.
 * **Continuous Fluid Magnification:** Normal cursor ($1.0\times$) $\to$ smooth $3.0\times$ on first shake detection $\to$ $+1.0\times$ for each subsequent shake detection ($3\times \to 4\times \to 5\times \to 6\times \to 7\times \dots$).
 * **200ms InOutCubic Animation:** Smooth cubic transitions with seamless mid-flight rebasing between target magnifications without visual pops.
 * **900ms Deflate Timer:** After 0.9 seconds of stillness, smoothly animates back to $1.0\times$ over 200ms and restores the native cursor.
 * **Universal Single Proxy Overlay:** Renders identically across applications (terminals, browsers), empty workspaces, and desktop backgrounds on a click-through, focusless overlay (`WlrLayer.Overlay`).
 * **Hotspot-Anchored Precision:** Scales precisely around the cursor hotspot with zero pointer tip drift across all magnification levels.
 * **Theme-Agnostic Asset Discovery:** Automatically discovers the active theme and extracts the highest-resolution arrow/default cursor asset (XCursor bitmaps up to 96px+ or Hyprcursor SVGs).
-* **Defensive Cursor Handoff:** The proxy is presented at 1x before the native cursor is hidden, and HIDE/SHOW operations require compositor acknowledgements. After SHOW is acknowledged the 1x proxy stays up for 550ms, because Hyprland only applies `cursor:invisible` on its next 500ms cursor tick. Normal termination and handled failure paths request native-cursor restoration; an unconfirmed SHOW keeps the proxy available as a fallback.
+* **Defensive Cursor Handoff:** The proxy is presented at 1x before the native cursor is hidden, and HIDE/SHOW operations require compositor acknowledgements. With hardware cursors, HIDDEN is only reported once Hyprland has actually removed the cursor from screen, so the proxy never grows underneath it. After SHOW is acknowledged the 1x proxy stays up for 550ms, because Hyprland only applies `cursor:invisible` on its next 500ms cursor tick. Normal termination and handled failure paths request native-cursor restoration; an unconfirmed SHOW keeps the proxy available as a fallback.
 
 ---
 
@@ -64,7 +64,7 @@ omarchy plugin remove io.github.sanjyay.wiggle
 
 * **Permissions & Device Access:** The bundled `wiggle-monitor` helper opens pointer devices in `/dev/input/event*` using `libevdev`. Stock Omarchy Quattro automatically provisions desktop users into the `input` group during system installation and user creation (`install/hardware/input-group.sh` and `bin/omarchy-provision-owner`), granting required read permissions without requiring `sudo`, custom udev rules, or privileged setup.
 * **Input Minimization:** The monitor opens only pointer devices: mice with relative axes (`REL_X`, `REL_Y`) and touchpads (absolute `ABS_X`/`ABS_Y` with finger tools). Composite receiver nodes may also advertise keyboard capabilities, but all mouse `EV_KEY` and button events are discarded. From touchpads only the finger position, contact and finger count are read; multi-finger gestures are ignored. Touchscreens, tablets and pens are rejected. The monitor never injects input and never uses `EVIOCGRAB`.
-* **Privacy & Memory Safety:** Cursor coordinates are queried over local Hyprland IPC when a shake is detected and while the proxy may need to track the pointer. Coordinates exist solely in volatile memory and are never persisted to disk, logged in production, or sent over any network.
+* **Privacy & Memory Safety:** Cursor coordinates are queried over local Hyprland IPC at most 20 times per second while the pointer moves (to tell real shakes from a locked pointer), when a shake is detected, and while the proxy may need to track the pointer. Coordinates exist solely in volatile memory and are never persisted to disk, logged in production, or sent over any network.
 * **No Network:** Wiggle performs zero network operations, contains no HTTP/socket network libraries, and includes no analytics, telemetry, or remote dependencies.
 * **Filesystem Safety:** Temporary extracted cursor assets are written exclusively to `$XDG_RUNTIME_DIR/wiggle/` with strict `0700` directory and `0600` file permissions.
 * **Untrusted Theme Files:** Xcursor headers, TOCs, offsets, dimensions, hotspots, and pixel payloads are bounds-checked before decoding. Malformed candidates are skipped in favor of a valid fallback when available.
